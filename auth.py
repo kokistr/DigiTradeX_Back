@@ -1,8 +1,11 @@
-# auth.py
 from fastapi import Depends
 from sqlalchemy.orm import Session
 import models
 from database import get_db
+import logging
+
+# ロギング設定
+logger = logging.getLogger(__name__)
 
 # 現在のユーザーを常に開発ユーザーとして返す関数
 async def get_current_user(db: Session = Depends(get_db)):
@@ -11,6 +14,7 @@ async def get_current_user(db: Session = Depends(get_db)):
     
     # ユーザーが存在しない場合は作成
     if not dev_user:
+        logger.info("開発ユーザーを作成します")
         dev_user = models.User(
             name="開発ユーザー",
             email="dev@example.com",
