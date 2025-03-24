@@ -15,7 +15,7 @@ import logging
 from database import SessionLocal, engine, test_db_connection
 import models
 import schemas
-from auth import create_access_token, get_password_hash, verify_password, get_current_user
+from auth import get_current_user, create_access_token, get_password_hash, verify_password
 from ocr_service import process_document, extract_po_data
 import config
 
@@ -43,9 +43,12 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="DigiTradeX API", description="PO管理システムのAPI")
 
 # CORSミドルウェアの設定
+# 環境変数から取得
+cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本番環境では適切なオリジンを指定
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,57 +65,33 @@ def get_db():
     finally:
         db.close()
 
-# 認証関連のエンドポイント
+# 認証関連のエンドポイント（ダミーレスポンスを返す）
 @app.post("/api/auth/login", response_model=schemas.Token)
 def login(user_data: schemas.UserLogin, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == user_data.email).first()
-    if not user or not verify_password(user_data.password, user.password_hash):
-        logger.warning(f"ログイン失敗: {user_data.email}")
-        raise HTTPException(
-            status_code=401,
-            detail="メールアドレスまたはパスワードが正しくありません",
-        )
-    
-    access_token = create_access_token(
-        data={"sub": user.email}
-    )
-    logger.info(f"ログイン成功: {user_data.email}")
-    return {"token": access_token, "token_type": "bearer"}
+    # ダミートークンを返す
+    logger.info(f"ダミーログイン成功: {user_data.email}")
+    return {"token": "dummy_token", "token_type": "bearer"}
 
 @app.post("/api/auth/register", response_model=schemas.User)
 def register_user(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
-    # メールアドレスの重複チェック
-    db_user = db.query(models.User).filter(models.User.email == user_data.email).first()
-    if db_user:
-        logger.warning(f"ユーザー登録失敗（メールアドレス重複）: {user_data.email}")
-        raise HTTPException(
-            status_code=400,
-            detail="このメールアドレスは既に登録されています",
-        )
-    
-    # ユーザー作成
-    hashed_password = get_password_hash(user_data.password)
-    db_user = models.User(
-        name=user_data.name,
-        email=user_data.email,
-        password_hash=hashed_password,
-        role=user_data.role
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    logger.info(f"ユーザー登録成功: {user_data.email}")
-    return db_user
+    # ダミーユーザーを返す
+    logger.info(f"ダミーユーザー登録成功: {user_data.email}")
+    return {
+        "user_id": 1,
+        "name": user_data.name,
+        "email": user_data.email,
+        "role": user_data.role
+    }
 
 # OCR関連のエンドポイント
 @app.post("/api/ocr/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    local_kw: Optional[str] = Query(None),  # local_kwクエリパラメータを追加
+    local_kw: Optional[str] = Query(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    request: Request = None,  # リクエストオブジェクトを追加
+    request: Request = None,
 ):
     logger.info(f"Request query params: {request.query_params if request else 'N/A'}")
     logger.info(f"Received file upload request: {file.filename}")
@@ -479,38 +458,6 @@ async def debug_status():
         }
     }
 
-# 起動時のカスタム処理
-@app.on_event("startup")
-async def startup_event():
-    logger.info("アプリケーション起動")
-    
-    # 初期データ投入（開発環境のみ）
-    if config.DEV_MODE:
-        db = SessionLocal()
-        try:
-            # 開発用ユーザーが存在しない場合は作成
-            dev_user = db.query(models.User).filter(models.User.email == "dev@example.com").first()
-            if not dev_user:
-                logger.info("開発用ユーザーを作成します")
-                hashed_password = get_password_hash("devpass")
-                dev_user = models.User(
-                    name="開発ユーザー",
-                    email="dev@example.com",
-                    password_hash=hashed_password,
-                    role="admin"
-                )
-                db.add(dev_user)
-                db.commit()
-        except Exception as e:
-            logger.error(f"初期データ投入エラー: {e}")
-        finally:
-            db.close()
-
-# シャットダウン時の処理
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("アプリケーション終了")
-
 # データベースからの削除機能
 @app.delete("/api/po/delete")
 async def delete_purchase_orders(
@@ -557,3 +504,33 @@ async def delete_purchase_orders(
             status_code=500,
             detail=f"POの削除中にエラーが発生しました: {str(e)}"
         )
+
+# 起動時のカスタム処理
+@app.on_event("startup")
+async def startup_event():
+    logger.info("アプリケーション起動")
+    
+    # 開発用ユーザーを初期化
+    db = SessionLocal()
+    try:
+        # 開発用ユーザーが存在しない場合は作成
+        dev_user = db.query(models.User).filter(models.User.email == "dev@example.com").first()
+        if not dev_user:
+            logger.info("開発用ユーザーを作成します")
+            dev_user = models.User(
+                name="開発ユーザー",
+                email="dev@example.com",
+                password_hash="dummy_hash",
+                role="admin"
+            )
+            db.add(dev_user)
+            db.commit()
+    except Exception as e:
+        logger.error(f"初期データ投入エラー: {e}")
+    finally:
+        db.close()
+
+# シャットダウン時の処理
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("アプリケーション終了")
