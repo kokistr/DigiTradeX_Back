@@ -1,3 +1,4 @@
+# app.py
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +12,7 @@ import json
 from datetime import datetime, timedelta
 import re
 import logging
+import sys
 
 from database import SessionLocal, engine, test_db_connection
 import models
@@ -59,7 +61,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # すべてのオリジンを許可
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # 明示的に全メソッドを許可
     allow_headers=["*"],
     expose_headers=["*"]
 )
@@ -122,6 +124,21 @@ def register_user(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
         "email": user_data.email,
         "role": user_data.role
     }
+
+# GETメソッド対応のOCRアップロードエンドポイント（新規追加）
+@app.get("/api/ocr/upload")
+async def upload_document_get():
+    """
+    GETメソッドでアクセスされた場合のヘルパーエンドポイント
+    """
+    logger.info("GETメソッドでOCRアップロードエンドポイントにアクセスがありました")
+    return JSONResponse(
+        status_code=200, 
+        content={
+            "message": "このエンドポイントはPOSTメソッドでファイルアップロードに使用します。GETメソッドは対応していません。",
+            "api_status": "running"
+        }
+    )
 
 # OCR関連のエンドポイント
 @app.post("/api/ocr/upload")
@@ -203,6 +220,20 @@ async def upload_document(
             content={"message": f"ファイルのアップロードに失敗しました: {str(e)}"}
         )
 
+# GETメソッド対応のデバッグアップロードエンドポイント（新規追加）
+@app.get("/api/debug/upload")
+async def debug_upload_get():
+    """
+    GETメソッドでアクセスされた場合のデバッグエンドポイント
+    """
+    logger.info("GETメソッドでデバッグアップロードエンドポイントにアクセスがありました")
+    return {
+        "message": "このエンドポイントはPOSTメソッドでファイルアップロードに使用します。",
+        "status": "ok",
+        "allowed_methods": ["POST"],
+        "example_usage": "POSTリクエストでmultipart/form-dataとしてファイルをアップロードしてください"
+    }
+
 # デバッグ用: シンプルなアップロードエンドポイント（認証不要）
 @app.post("/api/debug/upload")
 async def debug_upload(
@@ -273,6 +304,239 @@ async def debug_status():
         },
         "python_version": os.environ.get("PYTHONVERSION", "unknown")
     }
+
+# デバッグ情報拡張エンドポイント（新規追加）
+@app.get("/api/debug/info")
+async def debug_info():
+    """デバッグ情報を提供する拡張エンドポイント"""
+    return {
+        "server_time": datetime.now().isoformat(),
+        "python_version": sys.version,
+        "upload_folder_exists": os.path.exists(UPLOAD_FOLDER),
+        "upload_folder_writable": os.access(UPLOAD_FOLDER, os.W_OK),
+        "environment": os.environ.get("ENVIRONMENT", "production"),
+        "ports": {
+            "configured_port": os.environ.get("PORT", "8181"),
+            "websites_port": os.environ.get("WEBSITES_PORT", "Not set")
+        },
+        "endpoints": {
+            "health": "/api/health",
+            "debug_status": "/api/debug/status",
+            "ocr_upload": "/api/ocr/upload (POST)",
+            "debug_upload": "/api/debug/upload (POST)"
+        }
+    }
+
+# OCRステータス確認エンドポイントのGETメソッド対応（修正版）
+@app.get("/api/ocr/status/{ocr_id}")
+async def check_ocr_status(ocr_id: str, db: Session = Depends(get_db)):
+    """OCR処理のステータスを確認します。"""
+    logger.info(f"OCRステータス確認リクエスト受信: ID={ocr_id}")
+    
+    try:
+        # OCR結果をデータベースから取得
+        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+        
+        if ocr_result:
+            return {
+                "ocrId": ocr_id,
+                "status": ocr_result.status,
+                "last_updated": ocr_result.updated_at.isoformat() if ocr_result.updated_at else None
+            }
+        else:
+            # データがない場合は明示的にエラーを返す
+            logger.warning(f"OCR ID={ocr_id} が見つかりません。")
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "not_found",
+                    "message": "指定されたIDのOCR処理が見つかりません。IDが無効である可能性があります。"
+                }
+            )
+    except Exception as e:
+        logger.error(f"OCRステータス確認中にエラー: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"OCRステータスの取得に失敗しました: {str(e)}"
+            }
+        )
+
+# OCR抽出データ取得エンドポイントのGETメソッド対応（修正版）
+@app.get("/api/ocr/extract/{ocr_id}")
+async def get_ocr_data(ocr_id: str, db: Session = Depends(get_db)):
+    """OCR処理の結果を取得します。"""
+    logger.info(f"OCRデータ取得リクエスト受信: ID={ocr_id}")
+    
+    try:
+        # OCR結果をデータベースから取得
+        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+        
+        if ocr_result and ocr_result.processed_data and ocr_result.processed_data != "{}":
+            # 処理済みデータがある場合
+            try:
+                processed_data = json.loads(ocr_result.processed_data)
+                return {
+                    "ocrId": ocr_id,
+                    "status": "success",
+                    "data": processed_data
+                }
+            except json.JSONDecodeError:
+                # JSON解析エラー
+                logger.error(f"OCRデータのJSON解析エラー: ID={ocr_id}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "OCR結果データの形式が不正です。"
+                    }
+                )
+        else:
+            # データがない場合は明示的にエラーを返す
+            logger.warning(f"OCR ID={ocr_id} のデータがありません。")
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "not_found",
+                    "message": "指定されたIDのOCRデータが見つかりません。処理がまだ完了していないか、IDが無効である可能性があります。"
+                }
+            )
+    except Exception as e:
+        logger.error(f"OCRデータ取得中にエラー: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"OCRデータの取得に失敗しました: {str(e)}"
+            }
+        )
+
+# PO情報を登録するエンドポイント
+@app.post("/api/po/register")
+async def register_po(
+    po_data: dict,
+    current_user: models.User = Depends(current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    PO情報を登録します。
+    """
+    logger.info(f"PO登録リクエスト受信")
+    
+    try:
+        # POデータの検証（簡易版）
+        if not po_data.get("customer") or not po_data.get("poNumber"):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "必須項目が不足しています"}
+            )
+        
+        logger.info(f"PO登録: 顧客={po_data.get('customer')}, PO番号={po_data.get('poNumber')}")
+        
+        # 実際のデータベース処理を行う（ダミー）
+        # 実際にはここでデータベースに保存する処理を実装
+        
+        return {
+            "success": True,
+            "message": "PO情報が正常に登録されました",
+            "poId": str(uuid.uuid4())  # ダミーID
+        }
+    
+    except Exception as e:
+        logger.error(f"PO登録中にエラー: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"PO登録に失敗しました: {str(e)}"}
+        )
+
+# PO一覧を取得するエンドポイント
+@app.get("/api/po/list")
+async def get_po_list(
+    current_user: models.User = Depends(current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    PO一覧を取得します。
+    """
+    logger.info("PO一覧取得リクエスト受信")
+    
+    try:
+        # デモ用のダミーデータを返す
+        dummy_data = [
+            {
+                "id": 1,
+                "status": "手配中",
+                "acquisitionDate": "2025-03-15",
+                "organization": "営業部",
+                "invoice": "未作成",
+                "payment": "未払い",
+                "booking": "未手配",
+                "manager": "山田太郎",
+                "invoiceNumber": "INV-2025-001",
+                "poNumber": "PO-2025-001",
+                "customer": "株式会社ABC",
+                "productName": "製品A",
+                "quantity": 1000,
+                "currency": "USD",
+                "unitPrice": 10.5,
+                "amount": 10500,
+                "paymentTerms": "60日以内",
+                "terms": "CIF",
+                "destination": "東京",
+                "transitPoint": "横浜",
+                "cutOffDate": "2025-04-15",
+                "etd": "2025-04-20",
+                "eta": "2025-05-10",
+                "bookingNumber": "",
+                "vesselName": "",
+                "voyageNumber": "",
+                "containerInfo": "",
+                "memo": "初回取引"
+            },
+            {
+                "id": 2,
+                "status": "手配済",
+                "acquisitionDate": "2025-03-10",
+                "organization": "営業部",
+                "invoice": "作成済",
+                "payment": "未払い",
+                "booking": "手配済",
+                "manager": "鈴木花子",
+                "invoiceNumber": "INV-2025-002",
+                "poNumber": "PO-2025-002",
+                "customer": "株式会社XYZ",
+                "productName": "製品B",
+                "quantity": 500,
+                "currency": "USD",
+                "unitPrice": 15.75,
+                "amount": 7875,
+                "paymentTerms": "30日以内",
+                "terms": "FOB",
+                "destination": "大阪",
+                "transitPoint": "神戸",
+                "cutOffDate": "2025-03-25",
+                "etd": "2025-03-30",
+                "eta": "2025-04-20",
+                "bookingNumber": "BK-12345",
+                "vesselName": "OCEAN STAR",
+                "voyageNumber": "V123",
+                "containerInfo": "40FT x 1",
+                "memo": "緊急出荷"
+            }
+        ]
+        
+        return {
+            "success": True,
+            "data": dummy_data
+        }
+    
+    except Exception as e:
+        logger.error(f"PO一覧取得中にエラー: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"PO一覧の取得に失敗しました: {str(e)}"}
+        )
 
 # バックエンドが起動したことのログ
 logger.info("アプリケーション初期化完了")
