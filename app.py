@@ -22,7 +22,7 @@ import config
 
 # ロギングの設定
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # INFOからDEBUGに変更
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
