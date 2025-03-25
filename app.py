@@ -44,14 +44,8 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="DigiTradeX API", description="PO管理システムのAPI")
 
 # CORSミドルウェアの設定 - 明示的なフロントエンドURLを含む
-cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
-if cors_origins == ["*"]:
-    # ワイルドカードの場合はフロントエンドのURLを明示的に追加
-    cors_origins = ["*", "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net"]
-else:
-    # tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net を追加
-    if "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net" not in cors_origins:
-        cors_origins.append("https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net")
+frontend_url = "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net"
+cors_origins = [frontend_url, "*"]  # フロントエンドURLを明示的に指定
 
 logger.info(f"CORS origins: {cors_origins}")
 
@@ -61,6 +55,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # 追加: レスポンスヘッダーの公開
+    max_age=86400  # 追加: プリフライトリクエストのキャッシュ時間（24時間）
 )
 
 # アップロードディレクトリの作成と権限確認
@@ -210,13 +206,16 @@ async def upload_document(
 @app.post("/api/debug/upload")
 async def debug_upload(
     file: UploadFile = File(...),
+    request: Request = None,
 ):
     logger.info(f"Debug upload received for file: {file.filename}")
+    logger.info(f"Debug request headers: {request.headers if request else 'N/A'}")
     
     try:
         # ファイル拡張子の確認
         file_ext = os.path.splitext(file.filename)[1].lower()
         if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.txt']:
+            logger.warning(f"Debug upload - 不正なファイル形式: {file_ext}")
             return JSONResponse(
                 status_code=400, 
                 content={"message": "Invalid file type"}
@@ -226,21 +225,87 @@ async def debug_upload(
         unique_filename = f"debug_{uuid.uuid4()}{file_ext}"
         file_location = os.path.join(config.UPLOAD_FOLDER, unique_filename)
         
+        logger.info(f"Debug upload - ファイルを保存: {file_location}")
+        
         content = await file.read()
         with open(file_location, "wb") as buffer:
             buffer.write(content)
         
-        return {
-            "success": True, 
+        logger.info(f"Debug upload - ファイル保存成功: サイズ={len(content)}バイト")
+        
+        # 開発用モックOCRデータを返す
+        mock_data = {
+            "success": True,
             "filename": unique_filename,
-            "size": len(content)
+            "size": len(content),
+            "ocrId": str(uuid.uuid4()),  # 擬似OCR ID
+            "status": "completed",
+            "data": {
+                "customer_name": "サンプル株式会社",
+                "po_number": "PO-2025-001",
+                "currency": "USD",
+                "payment_terms": "NET 30",
+                "shipping_terms": "CIF",
+                "destination": "Tokyo",
+                "products": [
+                    {
+                        "product_name": "Widget A",
+                        "quantity": "1000",
+                        "unit_price": "2.50",
+                        "amount": "2500.00"
+                    }
+                ]
+            }
         }
+        
+        logger.info(f"Debug upload - モックデータを返す: {mock_data}")
+        return mock_data
+        
     except Exception as e:
         logger.error(f"Debug upload error: {str(e)}")
         return JSONResponse(
             status_code=500, 
             content={"error": str(e)}
         )
+
+# デバッグ用: OCRステータス確認エンドポイント（認証不要）
+@app.get("/api/debug/ocr/status/{ocr_id}")
+async def debug_ocr_status(ocr_id: str):
+    logger.info(f"Debug OCR status request for ID: {ocr_id}")
+    
+    # 常に「完了」状態を返す
+    return {
+        "ocrId": ocr_id,
+        "status": "completed"
+    }
+
+# デバッグ用: OCRデータ取得エンドポイント（認証不要）
+@app.get("/api/debug/ocr/extract/{ocr_id}")
+async def debug_extract_data(ocr_id: str):
+    logger.info(f"Debug OCR data extraction request for ID: {ocr_id}")
+    
+    # モックデータを返す
+    mock_data = {
+        "ocrId": ocr_id,
+        "data": {
+            "customer_name": "サンプル株式会社",
+            "po_number": "PO-2025-001",
+            "currency": "USD",
+            "payment_terms": "NET 30",
+            "shipping_terms": "CIF",
+            "destination": "Tokyo",
+            "products": [
+                {
+                    "product_name": "Widget A",
+                    "quantity": "1000",
+                    "unit_price": "2.50",
+                    "amount": "2500.00"
+                }
+            ]
+        }
+    }
+    
+    return mock_data
 
 @app.get("/api/ocr/status/{ocr_id}")
 async def get_ocr_status(
@@ -277,7 +342,6 @@ async def extract_order_data(
     logger.info(f"OCRデータ抽出: ID={ocr_id}")
     return {"ocrId": ocr_result.id, "data": extracted_data}
 
-# 以下のコードは変更なし（長くなるので省略）
 # PO関連のエンドポイント
 @app.post("/api/po/register")
 async def register_po(
@@ -359,15 +423,15 @@ async def get_po_list(
                         # 変換できない場合は0として扱う
                         logger.warning(f"数量変換エラー: '{item.quantity}'を数値に変換できません。ID={po.id}")
             
-            # 結果の作成
+            # 結果の作成 - 「未」の代わりに空文字列を使用
             po_info = {
                 "id": po.id,
                 "status": po.status,
                 "acquisitionDate": input_info.po_acquisition_date if input_info else None,
                 "organization": input_info.organization if input_info else None,
-                "invoice": "完了" if input_info and input_info.invoice_number else "未",
-                "payment": "完了" if input_info and input_info.payment_status == "completed" else "未",
-                "booking": "完了" if shipping_info else "未",
+                "invoice": "完了" if input_info and input_info.invoice_number else "",  # 「未」ではなく空欄に
+                "payment": "完了" if input_info and input_info.payment_status == "completed" else "",  # 「未」ではなく空欄に
+                "booking": "完了" if shipping_info else "",  # 「未」ではなく空欄に
                 "manager": current_user.name,
                 "invoiceNumber": input_info.invoice_number if input_info else None,
                 "poNumber": po.po_number,
@@ -419,11 +483,7 @@ async def update_po_status(
         logger.warning(f"PO更新失敗（無効なステータス）: ID={po_id}, ステータス={status_data.status}")
         raise HTTPException(status_code=400, detail="無効なステータスです")
     
-    # 計上済みから他のステータスへの変更を禁止
-    if po.status == "計上済" and status_data.status != "計上済":
-        logger.warning(f"PO更新失敗（計上済みPOの変更）: ID={po_id}")
-        raise HTTPException(status_code=400, detail="計上済みのPOのステータスは変更できません")
-    
+    # 計上済からも他のステータスへの変更を許可（制限を削除）
     old_status = po.status
     po.status = status_data.status
     db.commit()
