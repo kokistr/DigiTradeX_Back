@@ -1,14 +1,13 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import logging
 import uuid
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = FastAPI()
-
 # CORS設定を追加
 app.add_middleware(
     CORSMiddleware,
@@ -17,7 +16,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 @app.get("/")
 async def root():
     logger.info("ルートエンドポイントにアクセスがありました")
@@ -34,7 +32,37 @@ async def debug_info():
         "ocr_temp_folder": os.getenv("OCR_TEMP_FOLDER", "/tmp")
     }
 
-# 簡易的なファイルアップロードエンドポイントを追加
+# フロントエンドから呼び出される実際のOCRアップロードエンドポイント
+@app.post("/api/ocr/upload")
+async def ocr_upload(
+    file: UploadFile = File(...),
+    local_kw: Optional[str] = Form(None)
+):
+    logger.info(f"OCRアップロードリクエスト受信: {file.filename}")
+    logger.info(f"パラメータ: local_kw={local_kw}")
+    
+    try:
+        # 一時ファイル保存
+        file_content = await file.read()
+        unique_id = str(uuid.uuid4())
+        file_path = f"/tmp/upload_{unique_id}_{file.filename}"
+        
+        # ファイル保存
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        
+        logger.info(f"ファイル保存成功: {file_path}")
+        
+        # 本来のAPIレスポース形式に合わせる
+        return {
+            "ocrId": unique_id, 
+            "status": "processing"
+        }
+    except Exception as e:
+        logger.error(f"ファイルアップロードエラー: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+# 簡易的なファイルアップロードエンドポイント
 @app.post("/api/debug/upload")
 async def debug_upload(file: UploadFile = File(...)):
     logger.info(f"ファイルアップロードリクエスト: {file.filename}")
