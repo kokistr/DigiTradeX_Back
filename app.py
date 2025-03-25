@@ -43,9 +43,17 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="DigiTradeX API", description="PO管理システムのAPI")
 
-# CORSミドルウェアの設定
-# 環境変数から取得
+# CORSミドルウェアの設定 - 明示的なフロントエンドURLを含む
 cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+if cors_origins == ["*"]:
+    # ワイルドカードの場合はフロントエンドのURLを明示的に追加
+    cors_origins = ["*", "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net"]
+else:
+    # tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net を追加
+    if "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net" not in cors_origins:
+        cors_origins.append("https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net")
+
+logger.info(f"CORS origins: {cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,8 +63,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# アップロードディレクトリの作成
-os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+# アップロードディレクトリの作成と権限確認
+try:
+    os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+    # ディレクトリへの書き込み権限を確認
+    test_file_path = os.path.join(config.UPLOAD_FOLDER, "test_write.txt")
+    with open(test_file_path, "w") as f:
+        f.write("Test write permission")
+    os.remove(test_file_path)
+    logger.info(f"アップロードディレクトリが正常に作成され、書き込み権限があります: {config.UPLOAD_FOLDER}")
+except Exception as e:
+    logger.error(f"アップロードディレクトリの作成または権限チェックに失敗しました: {str(e)}")
 
 # 依存関係
 def get_db():
@@ -88,14 +105,15 @@ def register_user(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.post("/api/ocr/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    local_kw: Optional[str] = Query(None),
+    local_kw: Optional[str] = Form(None),  # FormパラメータとしてQueryの代わりに変更
     background_tasks: BackgroundTasks = BackgroundTasks(),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
     request: Request = None,
 ):
     logger.info(f"Request query params: {request.query_params if request else 'N/A'}")
-    logger.info(f"Received file upload request: {file.filename}")
+    logger.info(f"Request headers: {request.headers}")
+    logger.info(f"Received file upload request: {file.filename}, size: {file.size}")
     
     try:
         # ファイル拡張子の確認
@@ -115,41 +133,67 @@ async def upload_document(
         
         # ファイルの内容を読み取り
         file_content = await file.read()
+        file_size = len(file_content)
+        logger.info(f"File content read, size: {file_size} bytes")
 
         # ファイルを保存
-        with open(file_location, "wb") as buffer:
-            buffer.write(file_content)
+        try:
+            with open(file_location, "wb") as buffer:
+                buffer.write(file_content)
+            logger.info(f"File saved successfully to {file_location}")
+        except Exception as save_error:
+            logger.error(f"ファイル保存エラー: {str(save_error)}")
+            return JSONResponse(
+                status_code=500,
+                content={"message": f"ファイルの保存に失敗しました: {str(save_error)}"}
+            )
         
         # OCR結果レコード作成
-        ocr_result = models.OCRResult(
-            user_id=current_user.user_id,
-            file_path=file_location,
-            status="processing",
-            raw_text="",
-            processed_data="{}"
-        )
-        db.add(ocr_result)
-        db.commit()
-        db.refresh(ocr_result)
-        
-        logger.info(f"Created OCR result record with ID: {ocr_result.id}")
+        try:
+            ocr_result = models.OCRResult(
+                user_id=current_user.user_id,
+                file_path=file_location,
+                status="processing",
+                raw_text="",
+                processed_data="{}"
+            )
+            db.add(ocr_result)
+            db.commit()
+            db.refresh(ocr_result)
+            
+            logger.info(f"Created OCR result record with ID: {ocr_result.id}")
+        except Exception as db_error:
+            logger.error(f"データベース登録エラー: {str(db_error)}")
+            return JSONResponse(
+                status_code=500,
+                content={"message": f"OCR結果の登録に失敗しました: {str(db_error)}"}
+            )
         
         # バックグラウンドでOCR処理
-        if background_tasks:
-            background_tasks.add_task(
-                process_document,
-                file_path=file_location,
-                ocr_id=ocr_result.id,
-                db=db
-            )
-            logger.info(f"Added background task for OCR processing")
-        else:
-            # 開発環境用: OCRをスキップして直接完了状態にする
-            logger.info("No background tasks available, setting result to completed")
-            ocr_result.status = "completed"
-            ocr_result.raw_text = "Sample OCR text for development"
+        try:
+            if background_tasks:
+                background_tasks.add_task(
+                    process_document,
+                    file_path=file_location,
+                    ocr_id=ocr_result.id,
+                    db=db
+                )
+                logger.info(f"Added background task for OCR processing")
+            else:
+                # 開発環境用: OCRをスキップして直接完了状態にする
+                logger.info("No background tasks available, setting result to completed")
+                ocr_result.status = "completed"
+                ocr_result.raw_text = "Sample OCR text for development"
+                db.commit()
+        except Exception as task_error:
+            logger.error(f"バックグラウンドタスク登録エラー: {str(task_error)}")
+            # この時点ではOCR結果レコードは作成済みなので、エラーにしない
+            # ステータスをエラーに更新する
+            ocr_result.status = "error"
+            ocr_result.raw_text = f"Error during processing: {str(task_error)}"
             db.commit()
         
+        logger.info(f"Returning successful response with OCR ID: {ocr_result.id}")
         return {
             "ocrId": str(ocr_result.id), 
             "status": "processing"
@@ -160,6 +204,42 @@ async def upload_document(
         return JSONResponse(
             status_code=500, 
             content={"message": f"ファイルのアップロードに失敗しました: {str(e)}"}
+        )
+
+# デバッグ用: シンプルなアップロードエンドポイント（認証不要）
+@app.post("/api/debug/upload")
+async def debug_upload(
+    file: UploadFile = File(...),
+):
+    logger.info(f"Debug upload received for file: {file.filename}")
+    
+    try:
+        # ファイル拡張子の確認
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in ['.pdf', '.png', '.jpg', '.jpeg', '.txt']:
+            return JSONResponse(
+                status_code=400, 
+                content={"message": "Invalid file type"}
+            )
+        
+        # ファイル保存
+        unique_filename = f"debug_{uuid.uuid4()}{file_ext}"
+        file_location = os.path.join(config.UPLOAD_FOLDER, unique_filename)
+        
+        content = await file.read()
+        with open(file_location, "wb") as buffer:
+            buffer.write(content)
+        
+        return {
+            "success": True, 
+            "filename": unique_filename,
+            "size": len(content)
+        }
+    except Exception as e:
+        logger.error(f"Debug upload error: {str(e)}")
+        return JSONResponse(
+            status_code=500, 
+            content={"error": str(e)}
         )
 
 @app.get("/api/ocr/status/{ocr_id}")
@@ -197,6 +277,7 @@ async def extract_order_data(
     logger.info(f"OCRデータ抽出: ID={ocr_id}")
     return {"ocrId": ocr_result.id, "data": extracted_data}
 
+# 以下のコードは変更なし（長くなるので省略）
 # PO関連のエンドポイント
 @app.post("/api/po/register")
 async def register_po(
@@ -455,7 +536,8 @@ async def debug_status():
         "env": {
             "dev_mode": config.DEV_MODE,
             "db_host": config.DB_HOST,
-            "db_name": config.DB_NAME
+            "db_name": config.DB_NAME,
+            "cors_origins": cors_origins
         }
     }
 
