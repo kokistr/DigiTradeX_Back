@@ -22,9 +22,9 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
-# アプリケーション設定 - /tmp パスに変更
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp")
-OCR_TEMP_FOLDER = os.getenv("OCR_TEMP_FOLDER", "/tmp")
+# アプリケーション設定 - 明示的に/tmpに設定
+UPLOAD_FOLDER = "/tmp"
+OCR_TEMP_FOLDER = "/tmp"
 
 # 開発モード設定
 DEV_MODE = os.getenv("DEV_MODE", "False").lower() in ("true", "1", "t")
