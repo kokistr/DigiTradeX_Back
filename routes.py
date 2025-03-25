@@ -12,13 +12,20 @@ import shutil
 
 app = FastAPI()
 
-# CORSミドルウェアの設定
+# CORSミドルウェアの設定 - 明示的なフロントエンドURLを含む
+frontend_url = "https://tech0-gen-8-step4-dtx-pofront-b8dygjdpcgcbg8cd.canadacentral-01.azurewebsites.net"
+cors_origins = [frontend_url, "*"]  # フロントエンドURLを明示的に指定
+
+logger.info(f"CORS origins: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # 追加: レスポンスヘッダーの公開
+    max_age=86400  # 追加: プリフライトリクエストのキャッシュ時間（24時間）
 )
 
 # アップロードフォルダの設定
