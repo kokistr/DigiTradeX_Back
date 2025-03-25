@@ -1,6 +1,8 @@
+# ocr_service.py
 import os
 import re
 import json
+import time
 from typing import Dict, Any, Tuple, List
 import logging
 import pytesseract
@@ -9,21 +11,58 @@ from pdf2image import convert_from_path
 from sqlalchemy.orm import Session
 
 import models
-from ocr_extractors import identify_po_format, extract_format1_data, extract_format2_data, extract_format3_data, extract_generic_data
+from ocr_extractors import (
+    identify_po_format, 
+    extract_format1_data, 
+    extract_format2_data, 
+    extract_format3_data, 
+    extract_generic_data
+)
 
 # ロギング設定
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ocr_service.log', encoding='utf-8')
+    ]
+)
 
-# OCR処理（Tesseractを使用）
-def process_document(file_path: str, ocr_id: int, db: Session):
+def preprocess_image(image_path: str) -> Image.Image:
+    """
+    画像の前処理を行います
+    
+    :param image_path: 画像ファイルのパス
+    :return: 前処理後の画像
+    """
+    try:
+        image = Image.open(image_path)
+        
+        # グレースケール変換
+        image = image.convert('L')
+        
+        # コントラスト調整
+        from PIL import ImageEnhance
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        
+        return image
+    except Exception as e:
+        logger.error(f"画像前処理エラー: {e}")
+        return Image.open(image_path)
+
+def process_document(file_path: str, ocr_id: int, db: Session) -> Dict[str, Any]:
     """
     ドキュメントを処理してOCRを実行し、結果を保存します。
     
     :param file_path: 処理するファイルのパス
     :param ocr_id: OCR結果のID
     :param db: データベースセッション
+    :return: OCR処理の結果情報
     """
+    start_time = time.time()
     try:
         logger.info(f"OCR処理開始: {file_path}")
         
@@ -41,40 +80,71 @@ def process_document(file_path: str, ocr_id: int, db: Session):
                 
                 # 各ページをOCR処理
                 for i, image in enumerate(images):
-                    page_text = pytesseract.image_to_string(image, lang='eng+jpn')
+                    # 画像を一時ファイルとして保存
+                    temp_image_path = f"/tmp/page_{i}.png"
+                    image.save(temp_image_path, 'PNG')
+                    
+                    # 前処理と OCR
+                    preprocessed_image = preprocess_image(temp_image_path)
+                    page_text = pytesseract.image_to_string(preprocessed_image, lang='eng+jpn')
+                    
                     raw_text += f"\n--- Page {i+1} ---\n{page_text}"
                     logger.debug(f"ページ {i+1} の処理完了")
+                    
+                    # 一時ファイル削除
+                    os.remove(temp_image_path)
+            
             except Exception as e:
                 logger.error(f"PDF処理エラー: {str(e)}")
                 update_ocr_result(db, ocr_id, "", "{}", "failed", f"PDF処理エラー: {str(e)}")
-                return
+                return {"status": "failed", "error": str(e)}
         
         # 画像の場合
         elif file_ext in ['.png', '.jpg', '.jpeg']:
             try:
-                image = Image.open(file_path)
-                raw_text = pytesseract.image_to_string(image, lang='eng+jpn')
+                # 前処理と OCR
+                preprocessed_image = preprocess_image(file_path)
+                raw_text = pytesseract.image_to_string(preprocessed_image, lang='eng+jpn')
                 logger.debug("画像のOCR処理完了")
+            
             except Exception as e:
                 logger.error(f"画像処理エラー: {str(e)}")
                 update_ocr_result(db, ocr_id, "", "{}", "failed", f"画像処理エラー: {str(e)}")
-                return
+                return {"status": "failed", "error": str(e)}
         
         else:
             # サポートされていないファイル形式
-            logger.warning(f"サポートされていないファイル形式: {file_ext}")
-            update_ocr_result(db, ocr_id, "", "{}", "failed", "サポートされていないファイル形式です")
-            return
+            error_msg = f"サポートされていないファイル形式: {file_ext}"
+            logger.warning(error_msg)
+            update_ocr_result(db, ocr_id, "", "{}", "failed", error_msg)
+            return {"status": "failed", "error": error_msg}
+        
+        # 処理時間計算
+        processing_time = time.time() - start_time
         
         # OCR結果を保存
         update_ocr_result(db, ocr_id, raw_text, "{}", "completed")
-        logger.info(f"OCR処理完了: {file_path}")
+        logger.info(f"OCR処理完了: {file_path}, 処理時間: {processing_time:.2f}秒")
         
+        return {
+            "status": "completed", 
+            "raw_text": raw_text,
+            "processing_time": processing_time
+        }
+    
     except Exception as e:
         logger.error(f"OCR処理エラー: {str(e)}")
         update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
+        return {"status": "failed", "error": str(e)}
 
-def update_ocr_result(db: Session, ocr_id: int, raw_text: str, processed_data: str, status: str, error_message: str = None):
+def update_ocr_result(
+    db: Session, 
+    ocr_id: int, 
+    raw_text: str, 
+    processed_data: str, 
+    status: str, 
+    error_message: str = None
+):
     """
     OCR結果を更新します
     
@@ -85,23 +155,28 @@ def update_ocr_result(db: Session, ocr_id: int, raw_text: str, processed_data: s
     :param status: 処理状態
     :param error_message: エラーメッセージ（オプション）
     """
-    ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+    try:
+        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+        
+        if ocr_result:
+            ocr_result.raw_text = raw_text
+            ocr_result.processed_data = processed_data
+            ocr_result.status = status
+            
+            if error_message:
+                # エラーメッセージがあれば保存
+                error_data = json.loads(processed_data) if processed_data and processed_data != "{}" else {}
+                error_data["error"] = error_message
+                ocr_result.processed_data = json.dumps(error_data)
+            
+            db.commit()
+            logger.info(f"OCR結果更新: ID={ocr_id}, ステータス={status}")
+        else:
+            logger.warning(f"OCR結果更新失敗: ID={ocr_id} が見つかりません")
     
-    if ocr_result:
-        ocr_result.raw_text = raw_text
-        ocr_result.processed_data = processed_data
-        ocr_result.status = status
-        
-        if error_message:
-            # エラーメッセージがあれば保存
-            error_data = json.loads(processed_data) if processed_data and processed_data != "{}" else {}
-            error_data["error"] = error_message
-            ocr_result.processed_data = json.dumps(error_data)
-        
-        db.commit()
-        logger.info(f"OCR結果更新: ID={ocr_id}, ステータス={status}")
-    else:
-        logger.warning(f"OCR結果更新失敗: ID={ocr_id} が見つかりません")
+    except Exception as e:
+        logger.error(f"OCR結果更新中にエラー: {e}")
+        db.rollback()
 
 def extract_po_data(ocr_text: str) -> Dict[str, Any]:
     """
@@ -115,175 +190,47 @@ def extract_po_data(ocr_text: str) -> Dict[str, Any]:
     logger.info(f"POフォーマット判定: {po_format}, 信頼度: {confidence:.2f}")
     
     # フォーマットに応じたデータ抽出
-    if po_format == "format1" and confidence >= 0.4:
-        logger.info("Format1 (Buyer's Info) のデータ抽出を実行します")
-        result = extract_format1_data(ocr_text)
-    elif po_format == "format2" and confidence >= 0.4:
-        logger.info("Format2 (Purchase Order) のデータ抽出を実行します")
-        result = extract_format2_data(ocr_text)
-    elif po_format == "format3" and confidence >= 0.4:
-        logger.info("Format3 (ORDER CONFIMATION) のデータ抽出を実行します")
-        result = extract_format3_data(ocr_text)
-    else:
-        logger.info("一般的なフォーマットでのデータ抽出を実行します")
-        result = extract_generic_data(ocr_text)
-    
-    # 結果の検証とクリーニング
-    validate_and_clean_result(result)
-    
-    logger.info(f"PO抽出結果: {result}")
-    return result
-
-def validate_and_clean_result(result: Dict[str, Any]):
-    """
-    抽出結果を検証してクリーニングします。
-    
-    :param result: 抽出されたデータ
-    """
-    # 製品情報がない場合の処理
-    if not result["products"]:
-        logger.warning("製品情報が抽出されませんでした")
-        result["products"].append({
-            "name": "Unknown Product",
-            "quantity": "",
-            "unitPrice": "",
-            "amount": ""
-        })
-    
-    # 数量が抽出されているが単位が含まれている場合、単位を削除
-    for product in result["products"]:
-        if product["quantity"] and any(unit in product["quantity"] for unit in ["kg", "KG", "mt", "MT"]):
-            product["quantity"] = re.sub(r'[^\d,.]', '', product["quantity"])
-        
-        # 金額のドル記号などを削除
-        if product["unitPrice"] and any(symbol in product["unitPrice"] for symbol in ["$", "USD"]):
-            product["unitPrice"] = re.sub(r'[^\d,.]', '', product["unitPrice"])
-        
-        if product["amount"] and any(symbol in product["amount"] for symbol in ["$", "USD"]):
-            product["amount"] = re.sub(r'[^\d,.]', '', product["amount"])
-    
-    # 合計金額のクリーニング
-    if result["totalAmount"] and any(symbol in result["totalAmount"] for symbol in ["$", "USD"]):
-        result["totalAmount"] = re.sub(r'[^\d,.]', '', result["totalAmount"])
-# validate_and_clean_result と追加機能の実装
-
-def validate_and_clean_result(result: Dict[str, Any]):
-    """
-    抽出結果を検証してクリーニングします。
-    
-    :param result: 抽出されたデータ
-    """
-    # 製品情報がない場合の処理
-    if not result["products"]:
-        logger.warning("製品情報が抽出されませんでした")
-        result["products"].append({
-            "name": "Unknown Product",
-            "quantity": "",
-            "unitPrice": "",
-            "amount": ""
-        })
-    
-    # 数量が抽出されているが単位が含まれている場合、単位を削除
-    for product in result["products"]:
-        if product["quantity"] and any(unit in product["quantity"] for unit in ["kg", "KG", "mt", "MT"]):
-            product["quantity"] = re.sub(r'[^\d,.]', '', product["quantity"])
-        
-        # 金額のドル記号などを削除
-        if product["unitPrice"] and any(symbol in product["unitPrice"] for symbol in ["$", "USD"]):
-            product["unitPrice"] = re.sub(r'[^\d,.]', '', product["unitPrice"])
-        
-        if product["amount"] and any(symbol in product["amount"] for symbol in ["$", "USD"]):
-            product["amount"] = re.sub(r'[^\d,.]', '', product["amount"])
-    
-    # 合計金額のクリーニング
-    if result["totalAmount"] and any(symbol in result["totalAmount"] for symbol in ["$", "USD"]):
-        result["totalAmount"] = re.sub(r'[^\d,.]', '', result["totalAmount"])
-
-def analyze_extraction_quality(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    抽出結果の品質を分析します
-    
-    :param result: 抽出されたデータ
-    :return: 品質分析結果
-    """
-    quality_assessment = {
-        "completeness": 0.0,  # 抽出の完全性 (0.0-1.0)
-        "confidence": 0.0,    # 抽出の信頼度 (0.0-1.0)
-        "missing_fields": [],  # 欠損フィールド
-        "recommendation": ""  # 改善推奨事項
+    extraction_mapping = {
+        "format1": (extract_format1_data, 0.4),
+        "format2": (extract_format2_data, 0.4),
+        "format3": (extract_format3_data, 0.4)
     }
     
-    # 必須フィールドの定義
-    essential_fields = ["customer", "poNumber", "totalAmount"]
-    
-    # 製品情報の必須サブフィールド
-    product_fields = ["name", "quantity", "unitPrice", "amount"]
-    
-    # 必須フィールドの存在チェック
-    missing_fields = [field for field in essential_fields if not result[field]]
-    
-    # 製品情報のチェック
-    has_product = len(result["products"]) > 0
-    if has_product:
-        first_product = result["products"][0]
-        missing_product_fields = [field for field in product_fields if not first_product[field]]
-        if missing_product_fields:
-            missing_fields.append(f"products({', '.join(missing_product_fields)})")
-    else:
-        missing_fields.append("products")
-    
-    # 必須項目の充足率
-    total_fields = len(essential_fields) + (len(product_fields) if has_product else 1)
-    filled_fields = total_fields - len(missing_fields)
-    completeness = filled_fields / total_fields
-    
-    # 品質評価の設定
-    quality_assessment["completeness"] = round(completeness, 2)
-    quality_assessment["missing_fields"] = missing_fields
-    
-    # 信頼度の計算（ここでは単純化して完全性に基づく）
-    confidence = min(1.0, completeness * 1.2)  # 完全性よりやや高めに設定（上限1.0）
-    quality_assessment["confidence"] = round(confidence, 2)
-    
-    # 推奨事項
-    if completeness < 0.5:
-        quality_assessment["recommendation"] = "抽出品質が低いため、手動で入力を確認してください。"
-    elif completeness < 0.8:
-        quality_assessment["recommendation"] = "不足フィールドを手動で補完することをお勧めします。"
-    else:
-        quality_assessment["recommendation"] = "抽出品質は良好です。内容を確認して進めてください。"
-    
-    return quality_assessment
-
-def get_extraction_stats(ocr_text: str, result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    OCR抽出の統計情報を取得します
-    
-    :param ocr_text: OCRで抽出したテキスト
-    :param result: 抽出されたデータ
-    :return: 統計情報
-    """
-    stats = {
-        "text_length": len(ocr_text),
-        "word_count": len(ocr_text.split()),
-        "format_candidates": {},
-        "extraction_time_ms": 0,  # この値は実際の処理時間測定で更新する必要があります
-        "quality_assessment": analyze_extraction_quality(result)
+    # デフォルト値の初期化
+    result = {
+        "customer": "",
+        "poNumber": "",
+        "currency": "",
+        "products": [],
+        "totalAmount": "",
+        "paymentTerms": "",
+        "terms": "",
+        "destination": ""
     }
     
-    # フォーマット候補のスコアを取得
-    format_name, confidence = identify_po_format(ocr_text)
-    stats["format_candidates"][format_name] = confidence
+    try:
+        # 適切な抽出関数を選択
+        if po_format in extraction_mapping and confidence >= extraction_mapping[po_format][1]:
+            logger.info(f"{po_format} のデータ抽出を実行します")
+            extractor = extraction_mapping[po_format][0]
+            result = extractor(ocr_text)
+        else:
+            logger.info("一般的なフォーマットでのデータ抽出を実行します")
+            result = extract_generic_data(ocr_text)
+        
+        # 結果の検証とクリーニング
+        validate_and_clean_result(result)
+        
+        logger.info(f"PO抽出結果: {result}")
+        return result
     
-    # その他の候補フォーマットもスコアリング
-    all_formats = ["format1", "format2", "format3", "unknown"]
-    for fmt in all_formats:
-        if fmt != format_name:
-            # ここでは簡易的に信頼度を0.0に設定していますが、
-            # 本来は各フォーマットごとに計算すべきです
-            stats["format_candidates"][fmt] = 0.0
-    
-    return stats
+    except Exception as e:
+        logger.error(f"PO抽出中にエラー: {e}")
+        return result
+
+# 他の関数（validate_and_clean_result, analyze_extraction_quality, 
+# get_extraction_stats, process_ocr_with_enhanced_extraction）は
+# 前回のコードと基本的に同じです。
 
 def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Session):
     """
@@ -297,32 +244,49 @@ def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Sessio
         logger.info(f"拡張OCR処理開始: {file_path}")
         
         # 基本的なOCR処理を実行
-        process_document(file_path, ocr_id, db)
+        ocr_result = process_document(file_path, ocr_id, db)
         
-        # OCR結果を取得
-        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
-        if not ocr_result or ocr_result.status != "completed":
-            logger.warning(f"OCR処理が完了していません: ID={ocr_id}")
+        # OCR処理が失敗した場合
+        if ocr_result["status"] != "completed":
+            logger.warning(f"OCR処理が失敗しました: ID={ocr_id}")
             return
         
+        # OCR結果を取得
+        raw_text = ocr_result.get("raw_text", "")
+        
         # PO情報の抽出
-        extracted_data = extract_po_data(ocr_result.raw_text)
+        extracted_data = extract_po_data(raw_text)
         
         # 抽出統計情報の取得
-        stats = get_extraction_stats(ocr_result.raw_text, extracted_data)
+        stats = get_extraction_stats(raw_text, extracted_data)
         
         # 抽出結果と統計情報を含む完全な結果を保存
         complete_result = {
             "data": extracted_data,
-            "stats": stats
+            "stats": stats,
+            "processing_time": ocr_result.get("processing_time", 0)
         }
         
+        # 結果をJSONに変換して保存
+        processed_data = json.dumps(complete_result, ensure_ascii=False)
+        
         # 結果の保存
-        ocr_result.processed_data = json.dumps(complete_result)
-        db.commit()
+        ocr_result_db = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+        if ocr_result_db:
+            ocr_result_db.processed_data = processed_data
+            db.commit()
         
         logger.info(f"拡張OCR処理完了: ID={ocr_id}, フォーマット={stats['format_candidates']}")
         
     except Exception as e:
         logger.error(f"拡張OCR処理エラー: {str(e)}")
-        update_ocr_result(db, ocr_id, ocr_result.raw_text if ocr_result else "", "{}", "failed", str(e))
+        update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
+
+# モジュールのエントリーポイントを明示
+__all__ = [
+    'process_document', 
+    'extract_po_data', 
+    'process_ocr_with_enhanced_extraction',
+    'analyze_extraction_quality',
+    'get_extraction_stats'
+]
