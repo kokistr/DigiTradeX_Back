@@ -32,6 +32,15 @@ async def debug_info():
         "ocr_temp_folder": os.getenv("OCR_TEMP_FOLDER", "/tmp")
     }
 
+# API用動作確認エンドポイント (GETメソッド用)
+@app.get("/api/ocr/upload")
+async def ocr_upload_get():
+    logger.info("OCRアップロードGETリクエスト受信")
+    return {
+        "message": "このエンドポイントはPOSTメソッドでファイルアップロードに使用します。",
+        "status": "ok"
+    }
+
 # フロントエンドから呼び出される実際のOCRアップロードエンドポイント
 @app.post("/api/ocr/upload")
 async def ocr_upload(
@@ -61,6 +70,15 @@ async def ocr_upload(
     except Exception as e:
         logger.error(f"ファイルアップロードエラー: {str(e)}")
         return {"success": False, "error": str(e)}
+
+# デバッグ用動作確認エンドポイント (GETメソッド用)
+@app.get("/api/debug/upload")
+async def debug_upload_get():
+    logger.info("デバッグアップロードGETリクエスト受信")
+    return {
+        "message": "このエンドポイントはPOSTメソッドでファイルアップロードに使用します。",
+        "status": "ok"
+    }
 
 # 簡易的なファイルアップロードエンドポイント
 @app.post("/api/debug/upload")
