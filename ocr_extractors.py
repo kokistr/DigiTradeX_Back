@@ -695,3 +695,35 @@ def _clean_numeric_field(value: str) -> str:
     
     # 結果を文字列として返す（数値への変換は呼び出し側で必要に応じて行う）
     return normalized_text
+    
+def extract_po_data(text: str) -> Dict[str, Any]:
+    """
+    POフォーマットを識別し、適切な抽出関数を呼び出して結果を返す
+    
+    Args:
+        text: OCRで抽出されたテキスト
+        
+    Returns:
+        Dict: 抽出されたPOデータ
+    """
+    logger.info("POデータ抽出開始")
+    
+    # フォーマットを識別
+    po_format = identify_po_format(text)
+    logger.info(f"識別されたPOフォーマット: {po_format}")
+    
+    # 識別されたフォーマットに基づいて適切な抽出関数を呼び出す
+    if po_format == "format1":
+        raw_result = extract_format1_data(text)
+    elif po_format == "format2":
+        raw_result = extract_format2_data(text)
+    elif po_format == "format3":
+        raw_result = extract_format3_data(text)
+    else:  # generic
+        raw_result = extract_generic_data(text)
+    
+    # 結果の検証とクリーニング
+    cleaned_result = validate_and_clean_result(raw_result)
+    
+    logger.info("POデータ抽出完了")
+    return cleaned_result
