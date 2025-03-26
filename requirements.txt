@@ -13,4 +13,7 @@ python-dotenv==1.0.1
 cryptography==42.0.5
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
-cryptography-x509==0.3.0
+pydantic==2.3.0
+pydantic[email]==2.3.0
+aiofiles==23.2.1
+pyopenssl==23.2.0
