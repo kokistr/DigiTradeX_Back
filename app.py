@@ -9,6 +9,11 @@ import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime
+from sqlalchemy.orm import Session
+
+# データベース接続をインポート
+from database import get_db
+import models
 
 # ロギングの設定
 logging.basicConfig(
@@ -374,9 +379,11 @@ async def get_ocr_result(job_id: str):
     )
 
 @app.post("/api/po/register")
-async def register_po(request: Request):
+async def register_po(request: Request, db: Session = Depends(get_db)):
     """
     PO情報を登録するエンドポイント
+    
+    実際のデータベースに登録する処理に変更
     """
     logger.info("PO登録リクエスト")
     
@@ -394,63 +401,100 @@ async def register_po(request: Request):
                 content={"message": f"Missing required fields: {', '.join(missing_fields)}"}
             )
         
-        # ここでデータベースに保存する処理を行う (現在はモック)
-        po_id = str(uuid.uuid4())
+        # データベースにPOを保存
+        new_po = models.PurchaseOrder(
+            customer_name=data["customer_name"],
+            po_number=data["po_number"],
+            currency=data.get("currency", "USD"),
+            total_amount=data.get("total_amount", "0"),
+            payment_terms=data.get("payment_terms", ""),
+            shipping_terms=data.get("shipping_terms", ""),
+            destination=data.get("destination", ""),
+            status=data.get("status", "手配中"),
+            user_id=1  # デフォルトユーザーID (本来はログインユーザーから取得)
+        )
         
-        logger.info(f"PO登録成功: {po_id}")
+        db.add(new_po)
+        db.flush()  # IDを取得するためにflush
+        
+        # 商品情報を保存
+        for product in data.get("products", []):
+            order_item = models.OrderItem(
+                po_id=new_po.id,
+                product_name=product.get("product_name", ""),
+                quantity=product.get("quantity", "0"),
+                unit_price=product.get("unit_price", "0"),
+                subtotal=product.get("subtotal", "0")
+            )
+            db.add(order_item)
+        
+        # トランザクションをコミット
+        db.commit()
+        
+        logger.info(f"PO登録成功: {new_po.id}")
         
         return JSONResponse(content={
-            "id": po_id,
+            "id": new_po.id,
             "message": "PO登録が完了しました",
             "success": True
         })
     
     except Exception as e:
         logger.error(f"PO登録エラー: {str(e)}")
+        db.rollback()  # エラー時はロールバック
         return JSONResponse(
             status_code=500,
             content={"message": f"Error registering PO: {str(e)}"}
         )
 
 @app.get("/api/po/list")
-async def get_po_list():
+async def get_po_list(db: Session = Depends(get_db)):
     """
     PO一覧を取得するエンドポイント
+    
+    実際のデータベースから取得する処理に変更
     """
     logger.info("PO一覧取得リクエスト")
     
-    # モックデータを返す (本来はデータベースから取得)
-    mock_list = [
-        {
-            "id": "po1",
-            "customer_name": "Sample Customer A",
-            "po_number": "PO-2025-001",
-            "status": "pending",
-            "created_at": "2025-03-20T10:00:00Z",
-            "items_count": 3,
-            "total_amount": 450,
-            "currency": "USD",
-            "destination": "Tokyo"
-        },
-        {
-            "id": "po2",
-            "customer_name": "Sample Customer B",
-            "po_number": "PO-2025-002",
-            "status": "completed",
-            "created_at": "2025-03-22T14:30:00Z",
-            "items_count": 2,
-            "total_amount": 280,
-            "currency": "USD",
-            "destination": "Osaka"
-        }
-    ]
+    try:
+        # データベースからPO一覧を取得
+        purchase_orders = db.query(models.PurchaseOrder).order_by(models.PurchaseOrder.created_at.desc()).all()
+        
+        # レスポンス用のデータを整形
+        result = []
+        for po in purchase_orders:
+            # 商品数と合計金額を計算
+            items_count = db.query(models.OrderItem).filter(models.OrderItem.po_id == po.id).count()
+            
+            # PO情報をJSONに変換
+            po_data = {
+                "id": po.id,
+                "customer_name": po.customer_name,
+                "po_number": po.po_number,
+                "status": po.status,
+                "created_at": po.created_at.isoformat() if po.created_at else None,
+                "items_count": items_count,
+                "total_amount": po.total_amount,
+                "currency": po.currency,
+                "destination": po.destination
+            }
+            result.append(po_data)
+        
+        return JSONResponse(content=result)
     
-    return JSONResponse(content=mock_list)
+    except Exception as e:
+        logger.error(f"PO一覧取得エラー: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error retrieving PO list: {str(e)}"}
+        )
 
 @app.delete("/api/po/delete")
-async def delete_po(request: Request):
+async def delete_po(request: Request, db: Session = Depends(get_db)):
     """
     POを削除するエンドポイント
+    
+    実際のデータベースから削除する処理に変更
     """
     logger.info("PO削除リクエスト")
     
@@ -468,16 +512,35 @@ async def delete_po(request: Request):
         po_ids = data["ids"]
         logger.info(f"PO削除: {po_ids}")
         
-        # ここでデータベースから削除する処理を行う (現在はモック)
-        # モック成功レスポンス
+        # PO削除の前に関連する情報を削除（カスケード削除の補完）
+        for po_id in po_ids:
+            # 商品情報を削除
+            db.query(models.OrderItem).filter(models.OrderItem.po_id == po_id).delete()
+            
+            # 出荷スケジュールを削除
+            db.query(models.ShippingSchedule).filter(models.ShippingSchedule.po_id == po_id).delete()
+            
+            # 追加情報を削除
+            db.query(models.Input).filter(models.Input.po_id == po_id).delete()
+            
+            # OCR結果を削除
+            db.query(models.OCRResult).filter(models.OCRResult.po_id == po_id).delete()
+        
+        # POを削除
+        deleted_count = db.query(models.PurchaseOrder).filter(models.PurchaseOrder.id.in_(po_ids)).delete(synchronize_session=False)
+        
+        # トランザクションをコミット
+        db.commit()
+        
         return JSONResponse(content={
-            "message": f"{len(po_ids)}件のPOを削除しました",
-            "deleted_count": len(po_ids),
+            "message": f"{deleted_count}件のPOを削除しました",
+            "deleted_count": deleted_count,
             "success": True
         })
     
     except Exception as e:
         logger.error(f"PO削除エラー: {str(e)}")
+        db.rollback()  # エラー時はロールバック
         return JSONResponse(
             status_code=500,
             content={"message": f"Error deleting PO: {str(e)}"}
