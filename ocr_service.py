@@ -31,7 +31,7 @@ from ocr_extractors import (
 )
 
 # ロギングの設定
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)  # DEBUGからINFOに変更
 logger = logging.getLogger(__name__)
 
 class OCRError(Exception):
@@ -333,15 +333,15 @@ def extract_po_data(text: str) -> Dict[str, Any]:
         # 抽出結果の検証とクリーニング
         result = validate_and_clean_result(result)
         
-        # テーブル定義に合わせたフィールド名に変換
+        # データベースと完全互換の形式に整える
         db_compatible_result = {
             # PurchaseOrdersテーブルのフィールド
-            "customer_name": result.get("customer", ""),
+            "customer_name": result.get("customer_name", ""),
             "po_number": result.get("po_number", ""),
             "currency": result.get("currency", "USD"),
-            "total_amount": result.get("totalAmount", "0"),
-            "payment_terms": result.get("paymentTerms", ""),
-            "shipping_terms": result.get("terms", ""),
+            "total_amount": str(sum(item.get("subtotal", 0) for item in result.get("products", []))),
+            "payment_terms": result.get("payment_terms", ""),
+            "shipping_terms": result.get("shipping_terms", ""),
             "destination": result.get("destination", ""),
             "status": "pending",  # デフォルト値
             
@@ -349,15 +349,14 @@ def extract_po_data(text: str) -> Dict[str, Any]:
             "products": []
         }
         
-        # 商品情報の変換
-        if "items" in result and result["items"]:
-            for item in result["items"]:
-                db_compatible_result["products"].append({
-                    "product_name": item.get("name", ""),
-                    "quantity": item.get("quantity", 0),
-                    "unit_price": item.get("unit_price", 0),
-                    "subtotal": item.get("amount", 0)
-                })
+        # 商品情報の準備
+        for item in result.get("products", []):
+            db_compatible_result["products"].append({
+                "product_name": item.get("product_name", ""),
+                "quantity": str(item.get("quantity", 0)),
+                "unit_price": str(item.get("unit_price", 0)),
+                "subtotal": str(item.get("subtotal", 0))
+            })
         
         return db_compatible_result
     except Exception as e:
@@ -439,7 +438,7 @@ def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Sessio
         extracted_data = extract_po_data(raw_text)
         
         # 抽出統計情報の取得
-        stats = get_extraction_stats(raw_text, extracted_data)
+        stats = get_extraction_stats(extracted_data)  # raw_textを削除（引数修正）
         
         # 抽出結果と統計情報を含む完全な結果を保存
         complete_result = {
@@ -461,75 +460,6 @@ def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Sessio
         update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
         
     return None
-
-def get_ocr_status(job_id: str) -> Dict[str, Any]:
-    """
-    OCRジョブのステータスを取得
-    
-    Args:
-        job_id: OCRジョブID
-        
-    Returns:
-        ジョブステータス情報を含む辞書
-    """
-    # 実際のプロジェクトでは、データベースやキャッシュからジョブ状態を取得
-    # このサンプルでは、常に完了状態を返す
-    return {
-        "job_id": job_id,
-        "status": "completed",
-        "progress": 100,
-        "message": "処理が完了しました"
-    }
-
-def save_ocr_result(job_id: str, result: Dict[str, Any]) -> bool:
-    """
-    OCR結果をデータベースに保存
-    
-    Args:
-        job_id: OCRジョブID
-        result: 保存するOCR結果
-        
-    Returns:
-        保存が成功したかどうか
-    """
-    # 実際のプロジェクトでは、データベースに結果を保存
-    # このサンプルでは、常に成功を返す
-    logger.info(f"OCR結果を保存: job_id={job_id}")
-    return True
-
-def get_ocr_result(job_id: str) -> Dict[str, Any]:
-    """
-    OCR結果を取得
-    
-    Args:
-        job_id: OCRジョブID
-        
-    Returns:
-        OCR結果を含む辞書
-    """
-    # 実際のプロジェクトでは、データベースから結果を取得
-    # このサンプルでは、テーブル定義に合わせたモックデータを返す
-    return {
-        "job_id": job_id,
-        "data": {
-            "customer_name": "サンプル株式会社",
-            "po_number": "PO-2024-001",
-            "currency": "USD",
-            "products": [
-                {
-                    "product_name": "サンプル製品A",
-                    "quantity": "100",
-                    "unit_price": "10.00",
-                    "subtotal": "1000.00"
-                }
-            ],
-            "total_amount": "1000.00",
-            "payment_terms": "30日",
-            "shipping_terms": "CIF",
-            "destination": "東京",
-            "status": "pending"
-        }
-    }
 
 def process_po_file(file_path: str) -> Dict[str, Any]:
     """
@@ -560,3 +490,81 @@ def process_po_file(file_path: str) -> Dict[str, Any]:
             "status": "error",
             "error": str(e)
         }
+
+# 以下の関数は実際のデータベース接続で置き換えるため、非推奨とマーク
+def get_ocr_status(job_id: str) -> Dict[str, Any]:
+    """
+    OCRジョブのステータスを取得
+    
+    警告: この関数は非推奨です。実際のアプリケーションではデータベースから状態を取得してください。
+    
+    Args:
+        job_id: OCRジョブID
+        
+    Returns:
+        ジョブステータス情報を含む辞書
+    """
+    logger.warning("非推奨の get_ocr_status 関数が使用されています")
+    # 実際のプロジェクトでは、データベースやキャッシュからジョブ状態を取得
+    # このサンプルでは、常に完了状態を返す
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "progress": 100,
+        "message": "処理が完了しました"
+    }
+
+def save_ocr_result(job_id: str, result: Dict[str, Any]) -> bool:
+    """
+    OCR結果をデータベースに保存
+    
+    警告: この関数は非推奨です。実際のアプリケーションではデータベースに直接保存してください。
+    
+    Args:
+        job_id: OCRジョブID
+        result: 保存するOCR結果
+        
+    Returns:
+        保存が成功したかどうか
+    """
+    logger.warning("非推奨の save_ocr_result 関数が使用されています")
+    # 実際のプロジェクトでは、データベースに結果を保存
+    # このサンプルでは、常に成功を返す
+    logger.info(f"OCR結果を保存: job_id={job_id}")
+    return True
+
+def get_ocr_result(job_id: str) -> Dict[str, Any]:
+    """
+    OCR結果を取得
+    
+    警告: この関数は非推奨です。実際のアプリケーションではデータベースから結果を取得してください。
+    
+    Args:
+        job_id: OCRジョブID
+        
+    Returns:
+        OCR結果を含む辞書
+    """
+    logger.warning("非推奨の get_ocr_result 関数が使用されています")
+    # 実際のプロジェクトでは、データベースから結果を取得
+    return {
+        "job_id": job_id,
+        "data": {
+            "customer_name": "サンプル株式会社",
+            "po_number": "PO-2024-001",
+            "currency": "USD",
+            "products": [
+                {
+                    "product_name": "サンプル製品A",
+                    "quantity": "100",
+                    "unit_price": "10.00",
+                    "subtotal": "1000.00"
+                }
+            ],
+            "total_amount": "1000.00",
+            "payment_terms": "30日",
+            "shipping_terms": "CIF",
+            "destination": "東京",
+            "status": "pending"
+        }
+    }
