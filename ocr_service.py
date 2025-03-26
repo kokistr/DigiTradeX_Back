@@ -1,141 +1,354 @@
-# ocr_service.py
+"""
+OCR処理を行うサービスモジュール
+"""
 import os
-import re
+import uuid
+import logging
+import shutil
 import json
 import time
-from typing import Dict, Any, Tuple, List
-import logging
+from typing import Dict, List, Any, Tuple, Optional
 import pytesseract
-from PIL import Image
 from pdf2image import convert_from_path
+from PIL import Image, ImageEnhance
+import io
+import tempfile
+import re
 from sqlalchemy.orm import Session
 
+# OCR処理で抽出する内容の設定（必要に応じて拡張）
+from config import UPLOAD_FOLDER, OCR_TEMP_FOLDER
 import models
 from ocr_extractors import (
     identify_po_format, 
     extract_format1_data, 
     extract_format2_data, 
     extract_format3_data, 
-    extract_generic_data
+    extract_generic_data,
+    validate_and_clean_result,
+    analyze_extraction_quality,
+    get_extraction_stats
 )
 
-# ロギング設定
+# ロギングの設定
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('ocr_service.log', encoding='utf-8')
-    ]
-)
 
-def preprocess_image(image_path: str) -> Image.Image:
-    """
-    画像の前処理を行います
+class OCRError(Exception):
+    """OCR処理中のエラーを表す例外クラス"""
+    pass
+
+def ensure_directories_exist():
+    """必要なディレクトリが存在することを確認する"""
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(OCR_TEMP_FOLDER, exist_ok=True)
+    logger.info(f"ディレクトリの確認: UPLOAD_FOLDER={UPLOAD_FOLDER}, OCR_TEMP_FOLDER={OCR_TEMP_FOLDER}")
     
-    :param image_path: 画像ファイルのパス
-    :return: 前処理後の画像
+    # ディレクトリの権限も確認
+    for dir_path in [UPLOAD_FOLDER, OCR_TEMP_FOLDER]:
+        readable = os.access(dir_path, os.R_OK)
+        writable = os.access(dir_path, os.W_OK)
+        logger.info(f"ディレクトリ {dir_path} の権限: 読み取り={readable}, 書き込み={writable}")
+
+def save_uploaded_file(file, destination_folder: str = UPLOAD_FOLDER) -> str:
     """
+    アップロードされたファイルを保存し、保存先のパスを返す
+    
+    Args:
+        file: FastAPIのUploadFileオブジェクト
+        destination_folder: 保存先ディレクトリ
+        
+    Returns:
+        保存されたファイルのパス
+    """
+    # ディレクトリの存在確認
+    ensure_directories_exist()
+    
+    # 一意のファイル名を生成
+    unique_id = str(uuid.uuid4())
+    filename = f"{unique_id}_{file.filename}"
+    file_path = os.path.join(destination_folder, filename)
+    
     try:
-        image = Image.open(image_path)
+        # ファイルを保存
+        content = file.file.read()
+        with open(file_path, "wb") as buffer:
+            buffer.write(content)
         
+        # ファイルの先頭に戻す（他の処理で再度読み込めるように）
+        file.file.seek(0)
+        
+        logger.info(f"ファイルを保存しました: {file_path}")
+        return file_path
+    except Exception as e:
+        logger.error(f"ファイル保存中にエラーが発生: {str(e)}")
+        raise OCRError(f"ファイル保存中にエラーが発生: {str(e)}")
+
+def process_document(file_path: str) -> str:
+    """
+    PDFまたは画像ファイルを処理してテキストを抽出
+    
+    Args:
+        file_path: 処理するファイルのパス
+        
+    Returns:
+        抽出されたテキスト
+    """
+    logger.info(f"ドキュメント処理開始: {file_path}")
+    
+    # ファイルの存在確認
+    if not os.path.exists(file_path):
+        error_msg = f"ファイルが存在しません: {file_path}"
+        logger.error(error_msg)
+        raise OCRError(error_msg)
+    
+    # ファイル拡張子の取得（小文字に変換）
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    try:
+        # PDFファイルの場合
+        if file_ext == '.pdf':
+            logger.info("PDFファイルを処理します")
+            return process_pdf(file_path)
+        # 画像ファイルの場合
+        elif file_ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
+            logger.info("画像ファイルを処理します")
+            return process_image(file_path)
+        else:
+            error_msg = f"サポートされていないファイル形式です: {file_ext}"
+            logger.error(error_msg)
+            raise OCRError(error_msg)
+    except Exception as e:
+        logger.error(f"ドキュメント処理中にエラーが発生: {str(e)}")
+        raise OCRError(f"ドキュメント処理中にエラーが発生: {str(e)}")
+
+def preprocess_image(image):
+    """画像の前処理を行う（OCR精度向上のため）"""
+    try:
         # グレースケール変換
-        image = image.convert('L')
+        if image.mode != 'L':
+            image = image.convert('L')
         
-        # コントラスト調整
-        from PIL import ImageEnhance
+        # コントラスト強調
         enhancer = ImageEnhance.Contrast(image)
         image = enhancer.enhance(2.0)
         
+        # 明るさ調整
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.2)
+        
+        # シャープネス強調
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(1.5)
+        
         return image
     except Exception as e:
-        logger.error(f"画像前処理エラー: {e}")
-        return Image.open(image_path)
+        logger.warning(f"画像前処理中にエラー: {e}")
+        return image  # 元の画像を返す
 
-def process_document(file_path: str, ocr_id: int, db: Session) -> Dict[str, Any]:
+def process_pdf(pdf_path: str) -> str:
     """
-    ドキュメントを処理してOCRを実行し、結果を保存します。
+    PDFファイルを画像に変換し、テキストを抽出
     
-    :param file_path: 処理するファイルのパス
-    :param ocr_id: OCR結果のID
-    :param db: データベースセッション
-    :return: OCR処理の結果情報
+    Args:
+        pdf_path: PDFファイルのパス
+        
+    Returns:
+        抽出されたテキスト
     """
-    start_time = time.time()
+    logger.info(f"PDF処理開始: {pdf_path}")
+    
+    # PDFファイルから画像への変換
     try:
-        logger.info(f"OCR処理開始: {file_path}")
-        
-        # ファイルの拡張子を取得
-        _, file_ext = os.path.splitext(file_path)
-        file_ext = file_ext.lower()
-        
-        raw_text = ""
-        
-        # PDFの場合
-        if file_ext == '.pdf':
+        # 一時ディレクトリを作成
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info(f"一時ディレクトリを作成: {temp_dir}")
+            
+            # PDFからイメージへの変換（popplerが必要）
             try:
-                # PDFを画像に変換
-                images = convert_from_path(file_path)
+                # まずpoppler_pathなしで試す
+                try:
+                    images = convert_from_path(
+                        pdf_path,
+                        output_folder=temp_dir,
+                        fmt="png",
+                        dpi=300
+                    )
+                    logger.info(f"PDFを{len(images)}枚の画像に変換しました")
+                except Exception as e:
+                    # poppler_pathの指定を試みる
+                    logger.warning(f"標準パスでのPDF変換失敗: {e}")
+                    
+                    # 一般的なpopplerインストールパスを試す
+                    poppler_paths = [
+                        '/usr/bin',
+                        '/usr/local/bin',
+                        '/opt/homebrew/bin',
+                        '/usr/local/Cellar/poppler/21.08.0/bin',
+                        'C:\\Program Files\\poppler\\bin'
+                    ]
+                    
+                    for path in poppler_paths:
+                        try:
+                            logger.info(f"poppler_path試行: {path}")
+                            images = convert_from_path(
+                                pdf_path,
+                                output_folder=temp_dir,
+                                fmt="png",
+                                dpi=300,
+                                poppler_path=path
+                            )
+                            logger.info(f"PDFを{len(images)}枚の画像に変換しました (poppler_path={path})")
+                            break
+                        except Exception:
+                            continue
+                    else:
+                        # すべてのパスが失敗した場合
+                        raise OCRError("poppler-toolsが見つからないか、インストールが必要です。")
+            except Exception as e:
+                logger.error(f"PDF変換エラー: {str(e)}")
+                # 別の方法を試す
+                try:
+                    # ImageMagickを試みる（コマンドライン実行）
+                    logger.info("代替方法としてImageMagickを試行")
+                    img_path = os.path.join(temp_dir, "output.png")
+                    os.system(f"convert -density 300 '{pdf_path}' '{img_path}'")
+                    
+                    # 生成されたファイルを確認
+                    image_files = [f for f in os.listdir(temp_dir) if f.endswith('.png')]
+                    if image_files:
+                        images = [Image.open(os.path.join(temp_dir, f)) for f in sorted(image_files)]
+                        logger.info(f"ImageMagickで{len(images)}枚の画像に変換しました")
+                    else:
+                        raise OCRError("PDF変換に失敗しました。poppler-toolsまたはImageMagickをインストールしてください。")
+                except Exception as img_error:
+                    logger.error(f"ImageMagickも失敗: {img_error}")
+                    raise OCRError(f"PDFから画像への変換中にエラーが発生: {str(e)} および {str(img_error)}")
+            
+            # 各画像をOCR処理
+            all_text = ""
+            for i, image in enumerate(images):
+                logger.info(f"画像 {i+1}/{len(images)} からテキストを抽出しています")
                 
-                # 各ページをOCR処理
-                for i, image in enumerate(images):
-                    # 画像を一時ファイルとして保存
-                    temp_image_path = f"/tmp/page_{i}.png"
-                    image.save(temp_image_path, 'PNG')
-                    
-                    # 前処理と OCR
-                    preprocessed_image = preprocess_image(temp_image_path)
-                    page_text = pytesseract.image_to_string(preprocessed_image, lang='eng+jpn')
-                    
-                    raw_text += f"\n--- Page {i+1} ---\n{page_text}"
-                    logger.debug(f"ページ {i+1} の処理完了")
-                    
-                    # 一時ファイル削除
-                    os.remove(temp_image_path)
+                # 画像の前処理
+                processed_image = preprocess_image(image)
+                
+                # pytesseractを使用してテキスト抽出
+                try:
+                    page_text = pytesseract.image_to_string(processed_image, lang='eng')
+                except Exception as ocr_error:
+                    logger.error(f"OCRエラー: {ocr_error}")
+                    # 代替方法: 画像を一時ファイルとして保存して処理
+                    temp_image_path = os.path.join(temp_dir, f"page_{i}.png")
+                    processed_image.save(temp_image_path, 'PNG')
+                    try:
+                        page_text = pytesseract.image_to_string(temp_image_path, lang='eng')
+                    except Exception as e:
+                        logger.error(f"代替OCR方法も失敗: {e}")
+                        page_text = ""
+                
+                all_text += f"\n--- Page {i+1} ---\n{page_text}"
+                logger.debug(f"ページ {i+1} の抽出テキスト長: {len(page_text)} 文字")
             
-            except Exception as e:
-                logger.error(f"PDF処理エラー: {str(e)}")
-                update_ocr_result(db, ocr_id, "", "{}", "failed", f"PDF処理エラー: {str(e)}")
-                return {"status": "failed", "error": str(e)}
-        
-        # 画像の場合
-        elif file_ext in ['.png', '.jpg', '.jpeg']:
-            try:
-                # 前処理と OCR
-                preprocessed_image = preprocess_image(file_path)
-                raw_text = pytesseract.image_to_string(preprocessed_image, lang='eng+jpn')
-                logger.debug("画像のOCR処理完了")
-            
-            except Exception as e:
-                logger.error(f"画像処理エラー: {str(e)}")
-                update_ocr_result(db, ocr_id, "", "{}", "failed", f"画像処理エラー: {str(e)}")
-                return {"status": "failed", "error": str(e)}
-        
-        else:
-            # サポートされていないファイル形式
-            error_msg = f"サポートされていないファイル形式: {file_ext}"
-            logger.warning(error_msg)
-            update_ocr_result(db, ocr_id, "", "{}", "failed", error_msg)
-            return {"status": "failed", "error": error_msg}
-        
-        # 処理時間計算
-        processing_time = time.time() - start_time
-        
-        # OCR結果を保存
-        update_ocr_result(db, ocr_id, raw_text, "{}", "completed")
-        logger.info(f"OCR処理完了: {file_path}, 処理時間: {processing_time:.2f}秒")
-        
-        return {
-            "status": "completed", 
-            "raw_text": raw_text,
-            "processing_time": processing_time
-        }
-    
+            logger.info("PDFからのテキスト抽出が完了しました")
+            return all_text.strip()
     except Exception as e:
-        logger.error(f"OCR処理エラー: {str(e)}")
-        update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
-        return {"status": "failed", "error": str(e)}
+        logger.error(f"PDF処理中にエラーが発生: {str(e)}")
+        raise OCRError(f"PDF処理中にエラーが発生: {str(e)}")
+
+def process_image(image_path: str) -> str:
+    """
+    画像ファイルからテキストを抽出
+    
+    Args:
+        image_path: 画像ファイルのパス
+        
+    Returns:
+        抽出されたテキスト
+    """
+    logger.info(f"画像処理開始: {image_path}")
+    
+    try:
+        # PILを使用して画像を開く
+        with Image.open(image_path) as img:
+            # 画像の前処理
+            processed_image = preprocess_image(img)
+            
+            # pytesseractを使用してテキスト抽出
+            try:
+                text = pytesseract.image_to_string(processed_image, lang='eng')
+            except Exception as ocr_error:
+                logger.error(f"OCRエラー: {ocr_error}")
+                # 代替方法: 一時ファイルとして保存して処理
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                    temp_path = temp_file.name
+                
+                processed_image.save(temp_path, 'PNG')
+                try:
+                    text = pytesseract.image_to_string(temp_path, lang='eng')
+                    os.unlink(temp_path)  # 一時ファイルを削除
+                except Exception as e:
+                    logger.error(f"代替OCR方法も失敗: {e}")
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    text = ""
+            
+            logger.info("画像からのテキスト抽出が完了しました")
+            return text.strip()
+    except Exception as e:
+        logger.error(f"画像処理中にエラーが発生: {str(e)}")
+        raise OCRError(f"画像処理中にエラーが発生: {str(e)}")
+
+def extract_po_data(text: str) -> Dict[str, Any]:
+    """
+    OCRで抽出されたテキストからPO情報を抽出
+    
+    Args:
+        text: OCRで抽出されたテキスト
+        
+    Returns:
+        抽出されたPO情報を含む辞書
+    """
+    logger.info("POデータの抽出を開始します")
+    
+    try:
+        # POフォーマットを識別
+        po_format = identify_po_format(text)
+        logger.info(f"識別されたPOフォーマット: {po_format}")
+        
+        # フォーマットに応じた抽出処理を実行
+        if po_format == "format1":
+            result = extract_format1_data(text)
+        elif po_format == "format2":
+            result = extract_format2_data(text)
+        elif po_format == "format3":
+            result = extract_format3_data(text)
+        else:
+            # 汎用的な抽出処理を実行
+            result = extract_generic_data(text)
+        
+        # 抽出結果のログ出力
+        logger.info(f"抽出結果: {result}")
+        
+        # 抽出結果の検証とクリーニング
+        result = validate_and_clean_result(result)
+        
+        return result
+    except Exception as e:
+        logger.error(f"POデータの抽出中にエラーが発生: {str(e)}")
+        # エラーが発生しても基本的な情報は返す
+        return {
+            "error": str(e),
+            "status": "error",
+            "customer": "",
+            "poNumber": "",
+            "destination": "",
+            "terms": "",
+            "products": [],
+            "totalAmount": "0",
+            "paymentTerms": "",
+            "currency": "USD"
+        }
 
 def update_ocr_result(
     db: Session, 
@@ -148,12 +361,13 @@ def update_ocr_result(
     """
     OCR結果を更新します
     
-    :param db: データベースセッション
-    :param ocr_id: OCR結果のID
-    :param raw_text: 抽出されたテキスト
-    :param processed_data: 処理済みデータ（JSON文字列）
-    :param status: 処理状態
-    :param error_message: エラーメッセージ（オプション）
+    Args:
+        db: データベースセッション
+        ocr_id: OCR結果のID
+        raw_text: 抽出されたテキスト
+        processed_data: 処理済みデータ（JSON文字列）
+        status: 処理状態
+        error_message: エラーメッセージ（オプション）
     """
     try:
         ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
@@ -178,81 +392,22 @@ def update_ocr_result(
         logger.error(f"OCR結果更新中にエラー: {e}")
         db.rollback()
 
-def extract_po_data(ocr_text: str) -> Dict[str, Any]:
-    """
-    OCRで抽出したテキストから発注書データを抽出します。
-    
-    :param ocr_text: OCRで抽出したテキスト
-    :return: 構造化された発注書データ
-    """
-    # フォーマットの判別
-    po_format, confidence = identify_po_format(ocr_text)
-    logger.info(f"POフォーマット判定: {po_format}, 信頼度: {confidence:.2f}")
-    
-    # フォーマットに応じたデータ抽出
-    extraction_mapping = {
-        "format1": (extract_format1_data, 0.4),
-        "format2": (extract_format2_data, 0.4),
-        "format3": (extract_format3_data, 0.4)
-    }
-    
-    # デフォルト値の初期化
-    result = {
-        "customer": "",
-        "poNumber": "",
-        "currency": "",
-        "products": [],
-        "totalAmount": "",
-        "paymentTerms": "",
-        "terms": "",
-        "destination": ""
-    }
-    
-    try:
-        # 適切な抽出関数を選択
-        if po_format in extraction_mapping and confidence >= extraction_mapping[po_format][1]:
-            logger.info(f"{po_format} のデータ抽出を実行します")
-            extractor = extraction_mapping[po_format][0]
-            result = extractor(ocr_text)
-        else:
-            logger.info("一般的なフォーマットでのデータ抽出を実行します")
-            result = extract_generic_data(ocr_text)
-        
-        # 結果の検証とクリーニング
-        validate_and_clean_result(result)
-        
-        logger.info(f"PO抽出結果: {result}")
-        return result
-    
-    except Exception as e:
-        logger.error(f"PO抽出中にエラー: {e}")
-        return result
-
-# 他の関数（validate_and_clean_result, analyze_extraction_quality, 
-# get_extraction_stats, process_ocr_with_enhanced_extraction）は
-# 前回のコードと基本的に同じです。
-
 def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Session):
     """
     拡張抽出機能を持つOCR処理を実行します
     
-    :param file_path: 処理するファイルのパス
-    :param ocr_id: OCR結果のID
-    :param db: データベースセッション
+    Args:
+        file_path: 処理するファイルのパス
+        ocr_id: OCR結果のID
+        db: データベースセッション
     """
     try:
         logger.info(f"拡張OCR処理開始: {file_path}")
         
         # 基本的なOCR処理を実行
-        ocr_result = process_document(file_path, ocr_id, db)
-        
-        # OCR処理が失敗した場合
-        if ocr_result["status"] != "completed":
-            logger.warning(f"OCR処理が失敗しました: ID={ocr_id}")
-            return
-        
-        # OCR結果を取得
-        raw_text = ocr_result.get("raw_text", "")
+        start_time = time.time()
+        raw_text = process_document(file_path)
+        processing_time = time.time() - start_time
         
         # PO情報の抽出
         extracted_data = extract_po_data(raw_text)
@@ -264,29 +419,87 @@ def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Sessio
         complete_result = {
             "data": extracted_data,
             "stats": stats,
-            "processing_time": ocr_result.get("processing_time", 0)
+            "processing_time": processing_time
         }
         
         # 結果をJSONに変換して保存
         processed_data = json.dumps(complete_result, ensure_ascii=False)
         
-        # 結果の保存
-        ocr_result_db = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
-        if ocr_result_db:
-            ocr_result_db.processed_data = processed_data
-            db.commit()
+        # データベースに結果を保存
+        update_ocr_result(db, ocr_id, raw_text, processed_data, "completed")
         
-        logger.info(f"拡張OCR処理完了: ID={ocr_id}, フォーマット={stats['format_candidates']}")
+        logger.info(f"拡張OCR処理完了: ID={ocr_id}, 処理時間={processing_time:.2f}秒, フォーマット={stats['format_candidates']}")
         
     except Exception as e:
         logger.error(f"拡張OCR処理エラー: {str(e)}")
         update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
+        
+    return None
 
-# モジュールのエントリーポイントを明示
-__all__ = [
-    'process_document', 
-    'extract_po_data', 
-    'process_ocr_with_enhanced_extraction',
-    'analyze_extraction_quality',
-    'get_extraction_stats'
-]
+def get_ocr_status(job_id: str) -> Dict[str, Any]:
+    """
+    OCRジョブのステータスを取得
+    
+    Args:
+        job_id: OCRジョブID
+        
+    Returns:
+        ジョブステータス情報を含む辞書
+    """
+    # 実際のプロジェクトでは、データベースやキャッシュからジョブ状態を取得
+    # このサンプルでは、常に完了状態を返す
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "progress": 100,
+        "message": "処理が完了しました"
+    }
+
+def save_ocr_result(job_id: str, result: Dict[str, Any]) -> bool:
+    """
+    OCR結果をデータベースに保存
+    
+    Args:
+        job_id: OCRジョブID
+        result: 保存するOCR結果
+        
+    Returns:
+        保存が成功したかどうか
+    """
+    # 実際のプロジェクトでは、データベースに結果を保存
+    # このサンプルでは、常に成功を返す
+    logger.info(f"OCR結果を保存: job_id={job_id}")
+    return True
+
+def get_ocr_result(job_id: str) -> Dict[str, Any]:
+    """
+    OCR結果を取得
+    
+    Args:
+        job_id: OCRジョブID
+        
+    Returns:
+        OCR結果を含む辞書
+    """
+    # 実際のプロジェクトでは、データベースから結果を取得
+    # このサンプルでは、モックデータを返す
+    return {
+        "job_id": job_id,
+        "data": {
+            "customer": "サンプル株式会社",
+            "poNumber": "PO-2024-001",
+            "currency": "USD",
+            "products": [
+                {
+                    "name": "サンプル製品A",
+                    "quantity": "100",
+                    "unitPrice": "10.00",
+                    "amount": "1000.00"
+                }
+            ],
+            "totalAmount": "1000.00",
+            "paymentTerms": "30日",
+            "terms": "CIF",
+            "destination": "東京"
+        }
+    }
