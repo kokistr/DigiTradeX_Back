@@ -12,7 +12,7 @@ from datetime import datetime
 
 # ロギングの設定
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # 本番環境ではINFOレベルが適切
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler()
@@ -20,12 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.debug("アプリケーション初期化中")
+logger.info("アプリケーション初期化中")
 
 # 環境変数から設定を取得
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp")
 OCR_TEMP_FOLDER = os.getenv("OCR_TEMP_FOLDER", "/tmp")
-DEV_MODE = os.getenv("DEV_MODE", "True").lower() in ("true", "1", "t")
 
 # フォルダが存在しない場合は作成
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -34,31 +33,10 @@ os.makedirs(OCR_TEMP_FOLDER, exist_ok=True)
 # OCR処理インポート
 try:
     from ocr_service import process_document, extract_po_data, process_po_file
-    logger.debug("OCRサービスモジュールをインポートしました")
+    logger.info("OCRサービスモジュールをインポートしました")
 except ImportError as e:
     logger.error(f"OCRモジュールのインポートエラー: {str(e)}")
-    # モック関数を用意
-    def process_document(file_path):
-        logger.warning("モックのprocess_document関数が呼び出されました")
-        return "モックテキスト", ["モックページ1", "モックページ2"]
-    
-    def extract_po_data(ocr_text):
-        logger.warning("モックのextract_po_data関数が呼び出されました")
-        return {
-            "customer": "サンプル顧客",
-            "po_number": "PO-MOCK-12345",
-            "items": [
-                {"name": "サンプル商品", "quantity": 1, "unit_price": 100, "amount": 100}
-            ]
-        }
-    
-    def process_po_file(file_path):
-        logger.warning("モックのprocess_po_file関数が呼び出されました")
-        return {
-            "id": str(uuid.uuid4()),
-            "status": "completed",
-            "data": extract_po_data("")
-        }
+    raise ImportError("必要なOCRモジュールが見つかりません。requirements.txtの依存関係を確認してください。")
 
 # アプリケーション初期化
 app = FastAPI()
@@ -66,7 +44,7 @@ app = FastAPI()
 # CORS設定
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本番環境では特定のオリジンに制限することをお勧めします
+    allow_origins=["*"],  # 必要に応じて特定のオリジンに制限することも検討
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -89,7 +67,6 @@ async def root():
         "ocr_temp_dir_exists": os.path.exists(OCR_TEMP_FOLDER),
         "ocr_temp_dir_writable": os.access(OCR_TEMP_FOLDER, os.W_OK),
         "env": {
-            "dev_mode": DEV_MODE,
             "db_host": os.getenv("DB_HOST", "未設定"),
             "cors_enabled": True
         },
@@ -101,7 +78,6 @@ async def health_check():
     """
     ヘルスチェックエンドポイント
     """
-    logger.info("ヘルスチェックエンドポイントにアクセスがありました")
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 @app.get("/api/debug/info")
@@ -118,7 +94,6 @@ async def debug_info():
         "ocr_temp_folder_writable": os.access(OCR_TEMP_FOLDER, os.W_OK),
         "upload_folder": UPLOAD_FOLDER,
         "ocr_temp_folder": OCR_TEMP_FOLDER,
-        "dev_mode": DEV_MODE,
         "env_vars": {k: v for k, v in os.environ.items() if not k.startswith("PATH") and not k.startswith("XDG")}
     }
 
@@ -156,8 +131,7 @@ async def debug_status():
         },
         "environment": {
             "upload_folder": UPLOAD_FOLDER,
-            "ocr_temp_folder": OCR_TEMP_FOLDER,
-            "dev_mode": DEV_MODE
+            "ocr_temp_folder": OCR_TEMP_FOLDER
         },
         "jobs_count": len(jobs_status)
     }
@@ -181,7 +155,6 @@ async def get_ocr_upload():
     """
     OCRアップロードフォームの情報を返すGETエンドポイント
     """
-    logger.info("GET /api/ocr/upload へのアクセス")
     return {
         "message": "Please use POST method to upload files",
         "supported_formats": ["PDF", "PNG", "JPG", "JPEG"],
@@ -198,14 +171,14 @@ def process_file_background(file_path: str, job_id: str):
         job_id: 処理ジョブのID
     """
     try:
-        logger.debug(f"バックグラウンド処理開始: {job_id}")
+        logger.info(f"バックグラウンド処理開始: {job_id}")
         
         # OCR処理を実行
         result = process_po_file(file_path)
         
         # 結果を保存
         jobs_status[job_id] = result
-        logger.debug(f"バックグラウンド処理完了: {job_id}")
+        logger.info(f"バックグラウンド処理完了: {job_id}")
     
     except Exception as e:
         logger.error(f"バックグラウンド処理エラー: {str(e)}")
@@ -271,7 +244,6 @@ async def debug_upload_get():
     """
     アップロードデバッグ用のGETエンドポイント
     """
-    logger.info("GET /api/debug/upload へのアクセス")
     return {
         "message": "Upload debug endpoint is working",
         "method": "GET",
@@ -343,21 +315,11 @@ async def get_ocr_status(job_id: str):
         return JSONResponse(content=response)
     else:
         # ジョブIDが見つからない場合
-        # 開発モードでは常に完了したレスポンスを返す
-        if DEV_MODE:
-            logger.warning(f"ジョブID ({job_id}) が見つかりません。開発モードのためモックレスポンスを返します。")
-            return JSONResponse(content={
-                "id": job_id,
-                "status": "completed",
-                "progress": 100,
-                "message": "OCR処理が完了しました (モックデータ)"
-            })
-        else:
-            logger.error(f"ジョブIDが見つかりません: {job_id}")
-            return JSONResponse(
-                status_code=404,
-                content={"message": f"Job ID {job_id} not found"}
-            )
+        logger.error(f"ジョブIDが見つかりません: {job_id}")
+        return JSONResponse(
+            status_code=404,
+            content={"message": f"Job ID {job_id} not found"}
+        )
 
 @app.get("/api/ocr/extract/{job_id}")
 async def get_ocr_result(job_id: str):
@@ -373,10 +335,8 @@ async def get_ocr_result(job_id: str):
         if status.get("status") == "completed":
             # データがある場合はそれを返す
             if "data" in status:
-                return JSONResponse(content={
-                    "id": job_id,
-                    "data": status["data"]
-                })
+                # データベース名と一致する形式で直接データを返す
+                return JSONResponse(content=status["data"])
             else:
                 # データがない場合はエラーを返す
                 return JSONResponse(
@@ -407,39 +367,11 @@ async def get_ocr_result(job_id: str):
             )
     
     # ジョブIDが見つからない場合
-    # 開発モードでは常にモックデータを返す
-    if DEV_MODE:
-        logger.warning(f"ジョブID ({job_id}) が見つかりません。開発モードのためモックレスポンスを返します。")
-        return JSONResponse(content={
-            "id": job_id,
-            "data": {
-                "customer": "Sample Customer Corp.",
-                "po_number": "PO-2025-12345",
-                "currency": "USD",
-                "items": [
-                    {
-                        "name": "Widget A",
-                        "quantity": 10,
-                        "unit_price": 15.5,
-                        "amount": 155
-                    },
-                    {
-                        "name": "Widget B",
-                        "quantity": 5,
-                        "unit_price": 25.0,
-                        "amount": 125
-                    }
-                ],
-                "payment_terms": "Net 30",
-                "destination": "Tokyo, Japan"
-            }
-        })
-    else:
-        logger.error(f"ジョブIDが見つかりません: {job_id}")
-        return JSONResponse(
-            status_code=404,
-            content={"message": f"Job ID {job_id} not found"}
-        )
+    logger.error(f"ジョブIDが見つかりません: {job_id}")
+    return JSONResponse(
+        status_code=404,
+        content={"message": f"Job ID {job_id} not found"}
+    )
 
 @app.post("/api/po/register")
 async def register_po(request: Request):
@@ -453,7 +385,7 @@ async def register_po(request: Request):
         data = await request.json()
         
         # 必須フィールドの確認
-        required_fields = ["customer", "po_number", "items"]
+        required_fields = ["customer_name", "po_number", "products"]
         missing_fields = [field for field in required_fields if field not in data or not data[field]]
         
         if missing_fields:
@@ -491,7 +423,7 @@ async def get_po_list():
     mock_list = [
         {
             "id": "po1",
-            "customer": "Sample Customer A",
+            "customer_name": "Sample Customer A",
             "po_number": "PO-2025-001",
             "status": "pending",
             "created_at": "2025-03-20T10:00:00Z",
@@ -502,7 +434,7 @@ async def get_po_list():
         },
         {
             "id": "po2",
-            "customer": "Sample Customer B",
+            "customer_name": "Sample Customer B",
             "po_number": "PO-2025-002",
             "status": "completed",
             "created_at": "2025-03-22T14:30:00Z",
