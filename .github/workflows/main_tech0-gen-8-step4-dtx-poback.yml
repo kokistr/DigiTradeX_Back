@@ -87,12 +87,9 @@ jobs:
           echo "requirements.txt contents:"
           cat requirements.txt
       
-      - name: Deploy to Azure Web App with cleanup
+      - name: 'Deploy to Azure Web App'
+        uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
-        uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ env.APP_NAME }}
+          app-name: 'tech0-gen-8-step4-dtx-poback'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
-          clean: true    # 既存のファイルをクリーンアップして競合を防止
-          restart: true  # デプロイ後に再起動
