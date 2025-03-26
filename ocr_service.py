@@ -21,11 +21,6 @@ from config import UPLOAD_FOLDER, OCR_TEMP_FOLDER
 import models
 from ocr_extractors import (
     identify_po_format, 
-    extract_format1_data, 
-    extract_format2_data, 
-    extract_format3_data, 
-    extract_generic_data,
-    validate_and_clean_result,
     extract_po_data
 )
 
@@ -82,6 +77,64 @@ def save_uploaded_file(file, destination_folder: str = UPLOAD_FOLDER) -> str:
     except Exception as e:
         logger.error(f"ファイル保存中にエラーが発生: {str(e)}")
         raise OCRError(f"ファイル保存中にエラーが発生: {str(e)}")
+
+def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Session):
+    """
+    拡張抽出機能を持つOCR処理を実行します
+    
+    Args:
+        file_path: 処理するファイルのパス
+        ocr_id: OCR結果のID
+        db: データベースセッション
+    """
+    try:
+        logger.info(f"拡張OCR処理開始: {file_path}")
+        
+        start_time = time.time()
+        
+        # 基本的なOCR処理を実行
+        try:
+            raw_text = process_document(file_path)
+            logger.info(f"OCRテキスト抽出完了: {len(raw_text)} 文字")
+        except Exception as e:
+            logger.error(f"OCRテキスト抽出エラー: {str(e)}")
+            update_ocr_result(db, ocr_id, "", "{}", "failed", f"OCRテキスト抽出エラー: {str(e)}")
+            return
+        
+        processing_time = time.time() - start_time
+        
+        # PO情報の抽出
+        try:
+            extracted_data = extract_po_data(raw_text)
+            logger.info("POデータ抽出完了")
+        except Exception as e:
+            logger.error(f"POデータ抽出エラー: {str(e)}")
+            # OCRテキストは保存するが、抽出は失敗とマーク
+            update_ocr_result(db, ocr_id, raw_text, "{}", "failed", f"POデータ抽出エラー: {str(e)}")
+            return
+        
+        # 抽出結果と統計情報を含む完全な結果を保存
+        complete_result = {
+            "data": extracted_data,
+            "processing_time": processing_time,
+            "ocr_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # 結果をJSONに変換して保存
+        try:
+            processed_data = json.dumps(complete_result, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"JSON変換エラー: {str(e)}")
+            processed_data = json.dumps({"error": f"JSON変換エラー: {str(e)}"})
+        
+        # データベースに結果を保存
+        update_ocr_result(db, ocr_id, raw_text, processed_data, "completed")
+        
+        logger.info(f"拡張OCR処理完了: ID={ocr_id}, 処理時間={processing_time:.2f}秒")
+        
+    except Exception as e:
+        logger.error(f"拡張OCR処理エラー: {str(e)}")
+        update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
 
 def process_document(file_path: str) -> str:
     """
@@ -444,7 +497,7 @@ def update_ocr_result(
         error_message: エラーメッセージ（オプション）
     """
     try:
-        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.id == ocr_id).first()
+        ocr_result = db.query(models.OCRResult).filter(models.OCRResult.ocr_id == ocr_id).first()
         
         if ocr_result:
             ocr_result.raw_text = raw_text
@@ -469,64 +522,6 @@ def update_ocr_result(
     except Exception as e:
         logger.error(f"OCR結果更新中にエラー: {e}")
         db.rollback()
-
-def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Session):
-    """
-    拡張抽出機能を持つOCR処理を実行します
-    
-    Args:
-        file_path: 処理するファイルのパス
-        ocr_id: OCR結果のID
-        db: データベースセッション
-    """
-    try:
-        logger.info(f"拡張OCR処理開始: {file_path}")
-        
-        start_time = time.time()
-        
-        # 基本的なOCR処理を実行
-        try:
-            raw_text = process_document(file_path)
-            logger.info(f"OCRテキスト抽出完了: {len(raw_text)} 文字")
-        except Exception as e:
-            logger.error(f"OCRテキスト抽出エラー: {str(e)}")
-            update_ocr_result(db, ocr_id, "", "{}", "failed", f"OCRテキスト抽出エラー: {str(e)}")
-            return
-        
-        processing_time = time.time() - start_time
-        
-        # PO情報の抽出
-        try:
-            extracted_data = extract_po_data(raw_text)
-            logger.info("POデータ抽出完了")
-        except Exception as e:
-            logger.error(f"POデータ抽出エラー: {str(e)}")
-            # OCRテキストは保存するが、抽出は失敗とマーク
-            update_ocr_result(db, ocr_id, raw_text, "{}", "failed", f"POデータ抽出エラー: {str(e)}")
-            return
-        
-        # 抽出結果と統計情報を含む完全な結果を保存
-        complete_result = {
-            "data": extracted_data,
-            "processing_time": processing_time,
-            "ocr_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        # 結果をJSONに変換して保存
-        try:
-            processed_data = json.dumps(complete_result, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"JSON変換エラー: {str(e)}")
-            processed_data = json.dumps({"error": f"JSON変換エラー: {str(e)}"})
-        
-        # データベースに結果を保存
-        update_ocr_result(db, ocr_id, raw_text, processed_data, "completed")
-        
-        logger.info(f"拡張OCR処理完了: ID={ocr_id}, 処理時間={processing_time:.2f}秒")
-        
-    except Exception as e:
-        logger.error(f"拡張OCR処理エラー: {str(e)}")
-        update_ocr_result(db, ocr_id, "", "{}", "failed", str(e))
 
 def process_po_file(file_path: str) -> Dict[str, Any]:
     """
@@ -606,9 +601,9 @@ def get_ocr_result(job_id: str) -> Dict[str, Any]:
         "job_id": job_id,
         "data": {
             "customer_name": "サンプル株式会社",
-            "po_number": "PO-2024-001",
-            "currency": "USD",
-            "products": [
+            "po_no": "PO-2024-001",
+            "currency_code": "USD",
+            "order_items": [
                 {
                     "product_name": "サンプル製品A",
                     "quantity": "100",
@@ -616,10 +611,10 @@ def get_ocr_result(job_id: str) -> Dict[str, Any]:
                     "subtotal": "1000.00"
                 }
             ],
-            "total_amount": "1000.00",
-            "payment_terms": "30日",
-            "shipping_terms": "CIF",
-            "destination": "東京",
-            "status": "pending"
+            "total_price": "1000.00",
+            "payment_condition": "30日",
+            "shipping_term": "CIF",
+            "discharge_port": "東京",
+            "status": "手配中"
         }
     }
