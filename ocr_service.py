@@ -173,6 +173,7 @@ def process_document(file_path: str) -> str:
     except Exception as e:
         logger.error(f"ドキュメント処理中にエラーが発生: {str(e)}")
         raise OCRError(f"ドキュメント処理中にエラーが発生: {str(e)}")
+  
 
 def preprocess_image(image):
     """
