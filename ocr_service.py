@@ -333,21 +333,47 @@ def extract_po_data(text: str) -> Dict[str, Any]:
         # 抽出結果の検証とクリーニング
         result = validate_and_clean_result(result)
         
-        return result
+        # テーブル定義に合わせたフィールド名に変換
+        db_compatible_result = {
+            # PurchaseOrdersテーブルのフィールド
+            "customer_name": result.get("customer", ""),
+            "po_number": result.get("po_number", ""),
+            "currency": result.get("currency", "USD"),
+            "total_amount": result.get("totalAmount", "0"),
+            "payment_terms": result.get("paymentTerms", ""),
+            "shipping_terms": result.get("terms", ""),
+            "destination": result.get("destination", ""),
+            "status": "pending",  # デフォルト値
+            
+            # 商品情報（OrderItemsテーブルに対応）
+            "products": []
+        }
+        
+        # 商品情報の変換
+        if "items" in result and result["items"]:
+            for item in result["items"]:
+                db_compatible_result["products"].append({
+                    "product_name": item.get("name", ""),
+                    "quantity": item.get("quantity", 0),
+                    "unit_price": item.get("unit_price", 0),
+                    "subtotal": item.get("amount", 0)
+                })
+        
+        return db_compatible_result
     except Exception as e:
         logger.error(f"POデータの抽出中にエラーが発生: {str(e)}")
         # エラーが発生しても基本的な情報は返す
         return {
             "error": str(e),
             "status": "error",
-            "customer": "",
-            "poNumber": "",
+            "customer_name": "",
+            "po_number": "",
+            "currency": "USD",
+            "total_amount": "0",
+            "payment_terms": "",
+            "shipping_terms": "",
             "destination": "",
-            "terms": "",
-            "products": [],
-            "totalAmount": "0",
-            "paymentTerms": "",
-            "currency": "USD"
+            "products": []
         }
 
 def update_ocr_result(
@@ -428,7 +454,7 @@ def process_ocr_with_enhanced_extraction(file_path: str, ocr_id: int, db: Sessio
         # データベースに結果を保存
         update_ocr_result(db, ocr_id, raw_text, processed_data, "completed")
         
-        logger.info(f"拡張OCR処理完了: ID={ocr_id}, 処理時間={processing_time:.2f}秒, フォーマット={stats['format_candidates']}")
+        logger.info(f"拡張OCR処理完了: ID={ocr_id}, 処理時間={processing_time:.2f}秒")
         
     except Exception as e:
         logger.error(f"拡張OCR処理エラー: {str(e)}")
@@ -482,24 +508,55 @@ def get_ocr_result(job_id: str) -> Dict[str, Any]:
         OCR結果を含む辞書
     """
     # 実際のプロジェクトでは、データベースから結果を取得
-    # このサンプルでは、モックデータを返す
+    # このサンプルでは、テーブル定義に合わせたモックデータを返す
     return {
         "job_id": job_id,
         "data": {
-            "customer": "サンプル株式会社",
-            "poNumber": "PO-2024-001",
+            "customer_name": "サンプル株式会社",
+            "po_number": "PO-2024-001",
             "currency": "USD",
             "products": [
                 {
-                    "name": "サンプル製品A",
+                    "product_name": "サンプル製品A",
                     "quantity": "100",
-                    "unitPrice": "10.00",
-                    "amount": "1000.00"
+                    "unit_price": "10.00",
+                    "subtotal": "1000.00"
                 }
             ],
-            "totalAmount": "1000.00",
-            "paymentTerms": "30日",
-            "terms": "CIF",
-            "destination": "東京"
+            "total_amount": "1000.00",
+            "payment_terms": "30日",
+            "shipping_terms": "CIF",
+            "destination": "東京",
+            "status": "pending"
         }
     }
+
+def process_po_file(file_path: str) -> Dict[str, Any]:
+    """
+    POファイルを処理し、OCR結果を返す
+    
+    Args:
+        file_path: 処理するファイルのパス
+        
+    Returns:
+        処理結果を含む辞書
+    """
+    try:
+        # テキスト抽出
+        ocr_text = process_document(file_path)
+        
+        # POデータの抽出
+        po_data = extract_po_data(ocr_text)
+        
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "completed",
+            "data": po_data
+        }
+    except Exception as e:
+        logger.error(f"POファイル処理エラー: {str(e)}")
+        return {
+            "id": str(uuid.uuid4()),
+            "status": "error",
+            "error": str(e)
+        }
