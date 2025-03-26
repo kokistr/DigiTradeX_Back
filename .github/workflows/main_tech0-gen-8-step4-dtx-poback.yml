@@ -6,15 +6,6 @@ on:
       - main
   workflow_dispatch:
 
-# 同時実行を制限して競合を防止
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  PYTHON_VERSION: '3.10'                # Python のバージョンを設定
-  APP_NAME: tech0-gen-8-step4-dtx-poback  # App Service の名前
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.10'
       
       - name: Create virtual environment
         run: |
@@ -34,35 +25,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Prepare deployment package
-        run: |
-          mkdir -p deployment_package
-          cp -r *.py deployment_package/
-          cp requirements.txt deployment_package/
-          
-          # 必要なディレクトリがあれば追加
-          if [ -d "templates" ]; then
-            cp -r templates deployment_package/
-          fi
-          if [ -d "static" ]; then
-            cp -r static deployment_package/
-          fi
-          
-          # .env.example があれば .env としてコピー
-          if [ -f ".env.example" ]; then
-            cp .env.example deployment_package/.env
-          fi
-          
-          # デプロイパッケージの内容を確認
-          echo "Deployment package contents:"
-          ls -la deployment_package/
+      - name: Zip artifact for deployment
+        run: zip release.zip ./* -r
       
       - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: deployment_package/
-          retention-days: 1
+          path: release.zip
   
   deploy:
     runs-on: ubuntu-latest
@@ -76,20 +46,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-          path: .
       
-      - name: Display deployment contents
-        run: |
-          echo "Deployment contents:"
-          ls -la
-          
-          # requirements.txt の内容確認
-          echo "requirements.txt contents:"
-          cat requirements.txt
+      - name: Unzip artifact for deployment
+        run: unzip release.zip
       
-      - name: 'Deploy to Azure Web App'
-        uses: azure/webapps-deploy@v3
+      - name: Deploy to Azure Web App
         id: deploy-to-webapp
+        uses: azure/webapps-deploy@v3
         with:
           app-name: 'tech0-gen-8-step4-dtx-poback'
           slot-name: 'Production'
