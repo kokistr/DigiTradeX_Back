@@ -601,9 +601,9 @@ def get_ocr_result(job_id: str) -> Dict[str, Any]:
         "job_id": job_id,
         "data": {
             "customer_name": "サンプル株式会社",
-            "po_no": "PO-2024-001",
-            "currency_code": "USD",
-            "order_items": [
+            "po_number": "PO-2024-001",
+            "currency": "USD",
+            "products": [
                 {
                     "product_name": "サンプル製品A",
                     "quantity": "100",
@@ -611,10 +611,10 @@ def get_ocr_result(job_id: str) -> Dict[str, Any]:
                     "subtotal": "1000.00"
                 }
             ],
-            "total_price": "1000.00",
-            "payment_condition": "30日",
-            "shipping_term": "CIF",
-            "discharge_port": "東京",
+            "total_amount": "1000.00",
+            "payment_terms": "30日",
+            "shipping_terms": "CIF",
+            "destination": "東京",
             "status": "手配中"
         }
     }
