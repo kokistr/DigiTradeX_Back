@@ -1,110 +1,114 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, DateTime, Float
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, DateTime, Float, Date, Numeric, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from database import Base
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = "Users"
 
     user_id = Column(Integer, primary_key=True, index=True)
-    user_name = Column(String(100), nullable=False)
-    email = Column(String(100), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), default="user")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    role = Column(String(50), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
 
-    purchase_orders = relationship("PurchaseOrder", back_populates="user")
-    ocr_results = relationship("OCRResult", back_populates="user")
+    #purchase_orders = relationship("PurchaseOrders", back_populates="Users")
+    #ocr_results = relationship("OCRResults", back_populates="Users")
 
 class PurchaseOrder(Base):
-    __tablename__ = "purchase_orders"
+    __tablename__ = "PurchaseOrders"
 
     po_id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id"))
-    user_name = Column(String(100))
-    po_no = Column(String(100), nullable=False, index=True)
-    currency_code = Column(String(10))
-    total_price = Column(String(50))
-    payment_condition = Column(String(100))
-    shipping_term = Column(String(100))
-    discharge_port = Column(String(100))
-    status = Column(String(50), default="手配中")
-    cut_off_date = Column(String(50))
-    etd = Column(String(50))
-    eta = Column(String(50))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    user_id = Column(Integer, ForeignKey("Users.user_id"))
+    customer_name = Column(String(255), nullable=False)
+    po_number = Column(String(50), unique=True, nullable=False)
+    currency = Column(String(10), nullable=False)
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    payment_terms = Column(String(255), nullable=False)
+    shipping_terms = Column(String(255), nullable=False)
+    dstnination = Column(String(255), nullable=False)
+    status = Column(String(50), nullable=False, default="手配前")
+    created_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
 
-    user = relationship("User", back_populates="purchase_orders")
-    order_items = relationship("OrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
-    shipping_schedules = relationship("ShippingSchedule", back_populates="purchase_order", cascade="all, delete-orphan")
-    inputs = relationship("Input", back_populates="purchase_order", cascade="all, delete-orphan")
-    ocr_results = relationship("OCRResult", back_populates="purchase_order", cascade="all, delete-orphan")
+    #user = relationship("User", back_populates="purchase_orders")
+    #order_items = relationship("OrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
+    #shipping_schedules = relationship("ShippingSchedule", back_populates="purchase_order", cascade="all, delete-orphan")
+    #inputs = relationship("Input", back_populates="purchase_order", cascade="all, delete-orphan")
+    #ocr_results = relationship("OCRResult", back_populates="purchase_order", cascade="all, delete-orphan")
 
 class OrderItem(Base):
-    __tablename__ = "order_items"
+    __tablename__ = "OrderItems"
 
     item_id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
-    product_name = Column(String(200), nullable=False)
-    quantity = Column(String(50))
-    unit_price = Column(String(50))
-    subtotal = Column(String(50))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    po_id = Column(Integer, ForeignKey("PurchaseOrders.po_id"))
+    product_name = Column(String(255), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    unit_price = Column(Numeric(10, 2), nullable=False)
+    subtotal = Column(Numeric(10, 2), nullable=False)
+    #created_at = Column(DateTime(timezone=True), server_default=func.now())
+    #updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
-    purchase_order = relationship("PurchaseOrder", back_populates="order_items")
+    #purchase_order = relationship("PurchaseOrders", back_populates="order_items")
 
 class ShippingSchedule(Base):
-    __tablename__ = "shipping_schedules"
+    __tablename__ = "ShippingSchedules"
 
-    shipping_id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
-    shipping_company = Column(String(100))
-    transit_point = Column(String(100))
-    cut_off_date = Column(String(50))
-    etd = Column(String(50))
-    eta = Column(String(50))
-    booking_number = Column(String(100))
-    vessel_name = Column(String(100))
-    voyage_number = Column(String(50))
-    container_size = Column(String(100))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, ForeignKey("PurchaseOrders.po_id"))
+    shipping_company = Column(String(255), nullable=False)
+    transit_point = Column(String(255), nullable=True)
+    cut_off_date = Column(Date, nullable=False)
+    etd = Column(Date, nullable=False)
+    eta = Column(Date, nullable=False)
+    booking_number = Column(String(50), unique=True, nullable=False)
+    vessel_name = Column(String(255), nullable=False)
+    voyage_number = Column(String(50), nullable=False)
+    container_size = Column(String(50), nullable=False)
+    #created_at = Column(DateTime(timezone=True), server_default=func.now())
+    #updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
-    purchase_order = relationship("PurchaseOrder", back_populates="shipping_schedules")
+    #purchase_order = relationship("PurchaseOrders", back_populates="ShippingSchedules")
 
+class Log(Base):
+    __tablename__ = "Logs"
+
+    log_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("Users.user_id"))
+    action = Column(String(255), nullable=False)
+    processed_data = Column(Text, nullable=True)
+    
 class OCRResult(Base):
-    __tablename__ = "ocr_results"
+    __tablename__ = "OCRResults"
 
     ocr_id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id"))
-    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"), nullable=True)
+    po_id = Column(Integer, ForeignKey("PurchaseOrders.po_id"))
     file_path = Column(String(255), nullable=False)
-    raw_text = Column(Text)
-    processed_data = Column(Text)
-    status = Column(String(50), default="pending")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    raw_text = Column(Text, nullable=False)
+    processed_data = Column(Text, nullable=True)
+    status = Column(String(50), nullable=False, default="手配前")
+    #created_at = Column(DateTime(timezone=True), server_default=func.now())
+    #updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
-    user = relationship("User", back_populates="ocr_results")
-    purchase_order = relationship("PurchaseOrder", back_populates="ocr_results")
+    #user = relationship("Users", back_populates="OCRResults")
+    #purchase_order = relationship("PurchaseOrders", back_populates="OCRResults")
 
 class Input(Base):
-    __tablename__ = "inputs"
+    __tablename__ = "Input"
 
-    input_id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
-    shipment_arrangement = Column(String(50))
-    po_acquisition_date = Column(String(50))
-    organization = Column(String(100))
-    invoice_number = Column(String(100))
-    payment_status = Column(String(50))
-    booking_number = Column(String(100))
-    memo = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
-
-    purchase_order = relationship("PurchaseOrder", back_populates="inputs")
+    id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, ForeignKey("PurchaseOrders.po_id"))
+    shipment_arrangement = Column(String(255) ,nullable=False)
+    po_acquisition_date = Column(Date, nullable=False)
+    organization = Column(String(255), nullable=False)
+    invoice_number = Column(String(50), nullable=False)
+    payment_status = Column(String(50), nullable=False)
+    booking_number = Column(String(50), nullable=True)
+    memo = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
+    
+    #purchase_order = relationship("PurchaseOrders", back_populates="Input")
