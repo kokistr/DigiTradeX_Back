@@ -29,7 +29,7 @@ class PurchaseOrder(Base):
     total_amount = Column(Numeric(10, 2), nullable=False)
     payment_terms = Column(String(255), nullable=False)
     shipping_terms = Column(String(255), nullable=False)
-    dstnination = Column(String(255), nullable=False)
+    destination = Column(String(255), nullable=False)
     status = Column(String(50), nullable=False, default="手配前")
     created_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at = Column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
