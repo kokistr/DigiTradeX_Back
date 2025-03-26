@@ -695,6 +695,31 @@ def _clean_numeric_field(value: str) -> str:
     
     # 結果を文字列として返す（数値への変換は呼び出し側で必要に応じて行う）
     return normalized_text
+
+def _extract_float(value: str) -> float:
+    """
+    文字列から浮動小数点数を抽出する
+    
+    Args:
+        value: 抽出する文字列
+        
+    Returns:
+        float: 抽出された浮動小数点数、失敗した場合は0
+    """
+    try:
+        if not value:
+            return 0
+        
+        # 数値に変換できる形式にクリーニング
+        cleaned = _clean_numeric_field(value)
+        
+        # 空文字列の場合は0を返す
+        if not cleaned:
+            return 0
+            
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return 0
     
 def extract_po_data(text: str) -> Dict[str, Any]:
     """
@@ -725,5 +750,17 @@ def extract_po_data(text: str) -> Dict[str, Any]:
     # 結果の検証とクリーニング
     cleaned_result = validate_and_clean_result(raw_result)
     
-    logger.info("POデータ抽出完了")
+    # フィールド名の統一（確実にフロントエンドと一致させる）
+    # 製品情報のフィールド名を修正
+    if "products" in cleaned_result:
+        for i, product in enumerate(cleaned_result["products"]):
+            # 金額フィールドの確保
+            if "subtotal" in product and not "amount" in product:
+                cleaned_result["products"][i]["amount"] = product["subtotal"]
+                
+            # 商品名フィールドの確保
+            if "product_name" not in product and "name" in product:
+                cleaned_result["products"][i]["product_name"] = product["name"]
+                
+    logger.info("POデータ抽出完了と標準化")
     return cleaned_result
