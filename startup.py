@@ -99,7 +99,8 @@ def install_core_dependencies():
         "pydantic==2.3.0",
         "pydantic[email]==2.3.0",
         "aiofiles==23.2.1",
-        "pyopenssl==23.2.0"
+        "pyopenssl==23.2.0",
+        "pdf2image==1.17.0"
     ]
     
     for package in core_packages:
