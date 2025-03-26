@@ -14,6 +14,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("startup")
 
+def check_system_libraries():
+    """システムライブラリの存在を確認する関数"""
+    logger.info("=============== システムライブラリの確認 ===============")
+    import subprocess
+    import shutil
+
+    # poppler-utilsの確認
+    pdftoppm_path = shutil.which("pdftoppm")
+    if pdftoppm_path:
+        logger.info(f"pdftoppm (poppler-utils) が見つかりました: {pdftoppm_path}")
+    else:
+        logger.warning("pdftoppm (poppler-utils) が見つかりません。OCR機能は正常に動作しない可能性があります。")
+
+    # tesseract-ocrの確認
+    tesseract_path = shutil.which("tesseract")
+    if tesseract_path:
+        logger.info(f"tesseract が見つかりました: {tesseract_path}")
+    else:
+        logger.warning("tesseract が見つかりません。OCR機能は正常に動作しない可能性があります。")
+
+    # 代替手段: Pythonライブラリ経由で確認
+    try:
+        import pytesseract
+        logger.info("pytesseractライブラリが正常にインポートされました")
+    except ImportError:
+        logger.warning("pytesseractライブラリのインポートに失敗しました")
+
+    try:
+        from pdf2image import convert_from_path
+        logger.info("pdf2imageライブラリが正常にインポートされました")
+    except ImportError:
+        logger.warning("pdf2imageライブラリのインポートに失敗しました")
+
+    logger.info("=============== システムライブラリの確認完了 ===============")
+
 def setup_environment():
     """環境設定を行う関数"""
     logger.info("=============== 環境設定開始 ===============")
@@ -161,6 +196,9 @@ if __name__ == "__main__":
     try:
         # 診断用スクリプトの実行
         subprocess.run([sys.executable, "diagnosis.py"], check=False)
+        
+        # システムライブラリの確認を追加
+        check_system_libraries()
         
         # 環境設定
         app_dir, req_file = setup_environment()
