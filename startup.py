@@ -81,26 +81,26 @@ def install_core_dependencies():
     logger.info("コア依存パッケージを直接インストールします")
     
     core_packages = [
-        "fastapi==0.110.0",
-        "uvicorn==0.30.0",
+        "fastapi==0.103.1",
+        "uvicorn==0.23.2",
         "gunicorn==22.0.0",
-        "python-multipart==0.0.9",
-        "pillow==10.2.0",
-        "pdf2image==1.17.0",
-        "pytesseract==0.3.10",
-        "python-jose[cryptography]==3.3.0",
-        "passlib[bcrypt]==1.7.4",
-        "sqlalchemy==2.0.28",
+        "sqlalchemy==2.0.20",
         "pymysql==1.1.0",
-        "python-dotenv==1.0.1",
-        "cryptography==41.0.3",
-        "numpy==1.26.4",
-        "opencv-python-headless==4.9.0.80",
+        "python-jose==3.3.0",
+        "passlib==1.7.4",
+        "bcrypt==4.0.1",
+        "python-multipart==0.0.6",
+        "python-dotenv==1.0.0",
         "pydantic==2.3.0",
         "pydantic[email]==2.3.0",
+        "pytesseract==0.3.10",
+        "pdf2image==1.16.3",
+        "Pillow==10.0.0",
         "aiofiles==23.2.1",
+        "cryptography==41.0.3",
         "pyopenssl==23.2.0",
-        "pdf2image==1.17.0"
+        "numpy==1.26.4",
+        "opencv-python-headless==4.9.0.80"
     ]
     
     for package in core_packages:
