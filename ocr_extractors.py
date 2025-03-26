@@ -1,700 +1,671 @@
-"""
-OCR抽出ロジックを実装するモジュール
-"""
 import re
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Tuple, Optional
+import os
+from datetime import datetime
 
-# ロギングの設定
-logging.basicConfig(level=logging.INFO)
+# ロギング設定
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 def identify_po_format(text: str) -> str:
     """
-    テキスト内容からPOフォーマットを識別する
+    POフォーマットを自動判別する
     
     Args:
         text: OCRで抽出されたテキスト
         
     Returns:
-        識別されたフォーマット名 ("format1", "format2", "format3", "generic")
+        str: "format1", "format2", "format3", または "generic"
     """
-    logger.info("POフォーマットの識別を開始")
+    logger.debug("POフォーマット判別開始")
     
-    # スコアリングによるフォーマット判定
+    # スコアリング初期化
     scores = {
         "format1": 0,
         "format2": 0,
         "format3": 0
     }
     
-    # フォーマット1の特徴
-    if re.search(r"(?i)(Buyer'?s?\s*Info)", text):
-        scores["format1"] += 3
-    if re.search(r"(?i)(Consignee|Port\s+of\s+Loading)", text):
-        scores["format1"] += 1
+    # フォーマット1の特徴: 左上に(Buyer's Info)と記載
+    if re.search(r"buyer['']?s\s+info", text.lower()):
+        scores["format1"] += 10
     
-    # フォーマット2の特徴
-    if re.search(r"(?i)(Purchase\s+Order)", text):
-        scores["format2"] += 3
-    if re.search(r"(?i)(Bill\s+To|Ship\s+To)", text):
-        scores["format2"] += 1
+    # フォーマット2の特徴: 一番上の行にPurchase Orderと記載
+    first_lines = text.split('\n')[:5]  # 最初の5行を取得
+    for line in first_lines:
+        if re.search(r"purchase\s+order", line.lower()):
+            scores["format2"] += 10
     
-    # フォーマット3の特徴
-    if re.search(r"(?i)(\/\/\/\s*ORDER\s*CONFIMATION\s*\/\/\/)", text):
-        scores["format3"] += 5  # 決定的な特徴なので高いスコア
-    if re.search(r"(?i)(CONFIMATION|CONFIRMATION)", text):
-        scores["format3"] += 1
+    # フォーマット3の特徴: ファイル内に///ORDER CONFIMATION ///と記載
+    if re.search(r"///\s*order\s+conf[i]?[r]?mation\s*///", text.lower()):
+        scores["format3"] += 10
     
-    # 最高スコアのフォーマットを選択
-    max_score = max(scores.values())
-    if max_score > 0:
-        for format_name, score in scores.items():
-            if score == max_score:
-                logger.info(f"識別されたPOフォーマット: {format_name} (スコア: {score})")
-                return format_name
+    # 最も高いスコアのフォーマットを選択
+    format_type = max(scores, key=scores.get)
     
-    # 特徴が見つからない場合はジェネリックフォーマットを返す
-    logger.info("特定のフォーマットが識別できません。汎用的な抽出を行います。")
-    return "generic"
-
-def extract_field_by_regex(ocr_text: str, patterns: List[str], default_value: str = "") -> str:
-    """
-    正規表現パターンリストを使用して、最初にマッチするフィールド値を抽出します
+    # 十分な信頼度があるかチェック (閾値: 5)
+    if scores[format_type] < 5:
+        format_type = "generic"
     
-    Args:
-        ocr_text: OCRで抽出したテキスト
-        patterns: 正規表現パターンのリスト
-        default_value: デフォルト値
-        
-    Returns:
-        抽出された値または空文字列
-    """
-    for pattern in patterns:
-        match = re.search(pattern, ocr_text, re.IGNORECASE | re.MULTILINE)
-        if match and match.group(1).strip():
-            value = match.group(1).strip()
-            # 余計な記号を削除
-            value = re.sub(r'^[:\s]+|[:\s]+$', '', value)
-            return value
-    return default_value
+    logger.debug(f"POフォーマット判別結果: {format_type}, スコア: {scores}")
+    return format_type
 
 def extract_format1_data(text: str) -> Dict[str, Any]:
     """
-    フォーマット1（左上にBuyer's Infoと記載）からPOデータを抽出
+    フォーマット1（Buyer's Info形式）の発注書データを抽出
     
     Args:
         text: OCRで抽出されたテキスト
         
     Returns:
-        抽出されたPO情報を含む辞書
+        Dict: 抽出されたPOデータ
     """
-    logger.info("フォーマット1のPOデータ抽出を開始")
+    logger.debug("フォーマット1の抽出開始")
     
     result = {
         "customer": "",
-        "poNumber": "",
-        "destination": "",
-        "terms": "",
-        "products": [],
-        "totalAmount": "",
-        "paymentTerms": "",
-        "currency": ""
+        "po_number": "",
+        "currency": "",
+        "items": [],
+        "payment_terms": "",
+        "destination": ""
     }
     
-    # Buyer情報の抽出
-    buyer_match = re.search(r"(?i)Buyer'?s?\s*Info.*?:\s*(.*?)(?:\n|$)", text)
+    # 顧客名の抽出（Buyer's Infoセクションの下）
+    buyer_match = re.search(r"buyer['']?s\s+info.*?\n(.*?)\n", text, re.IGNORECASE | re.DOTALL)
     if buyer_match:
         result["customer"] = buyer_match.group(1).strip()
     
     # PO番号の抽出
-    po_match = re.search(r"(?i)P\.?O\.?\s*No\.?[\s:]*([A-Za-z0-9-]+)", text)
+    po_match = re.search(r"p\.?o\.?\s*no\.?[\s:#]*([\w\d\-]+)", text, re.IGNORECASE)
     if po_match:
-        result["poNumber"] = po_match.group(1).strip()
+        result["po_number"] = po_match.group(1).strip()
+    
+    # 通貨の抽出
+    currency_match = re.search(r"currency[\s:]*(\w{3})", text, re.IGNORECASE)
+    if currency_match:
+        result["currency"] = currency_match.group(1).strip()
+    
+    # 支払い条件の抽出
+    payment_match = re.search(r"payment\s+terms?[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if payment_match:
+        result["payment_terms"] = payment_match.group(1).strip()
     
     # 仕向地の抽出
-    dest_match = re.search(r"(?i)Port\s+of\s+Destination\s*:\s*(.*?)(?:\n|$)", text)
+    dest_match = re.search(r"destination[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
     if dest_match:
         result["destination"] = dest_match.group(1).strip()
     
-    # 支払条件の抽出
-    terms_match = re.search(r"(?i)Payment\s+Terms\s*:\s*(.*?)(?:\n|$)", text)
-    if terms_match:
-        result["paymentTerms"] = terms_match.group(1).strip()
-    
-    # 出荷条件の抽出
-    shipping_match = re.search(r"(?i)Shipping\s+Terms\s*:\s*(.*?)(?:\n|$)", text)
-    if shipping_match:
-        result["terms"] = shipping_match.group(1).strip()
-    
-    # 通貨の抽出
-    currency_match = re.search(r"(?i)Currency\s*:\s*(USD|EUR|JPY|CNY)", text)
-    if currency_match:
-        result["currency"] = currency_match.group(1).strip()
-    elif re.search(r"\$([\d,.]+)", text):
-        result["currency"] = "USD"
-    
-    # 製品情報の抽出
-    # 表形式のデータを解析する複雑なロジックが必要かもしれません
-    product_section = re.search(r"(?i)(Item.*?Quantity.*?Amount).*?(Total|Grand\s+Total)", text, re.DOTALL)
-    if product_section:
-        product_text = product_section.group(0)
+    # 商品情報の抽出（表形式を想定）
+    items_section = re.search(r"item.*?description.*?qty.*?price.*?amount(.*?)total", text, re.IGNORECASE | re.DOTALL)
+    if items_section:
+        items_text = items_section.group(1).strip()
+        item_lines = [line.strip() for line in items_text.split('\n') if line.strip()]
         
-        # 行ごとに処理
-        lines = product_text.split("\n")
-        current_product = {}
-        
-        for line in lines:
-            # 製品名と数量のパターン
-            prod_match = re.search(r"(\d+)\s+(.*?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)", line)
-            if prod_match:
-                if current_product and current_product.get("name"):
-                    result["products"].append(current_product)
-                
-                current_product = {
-                    "name": prod_match.group(2).strip(),
-                    "quantity": prod_match.group(3),
-                    "unitPrice": prod_match.group(5),
-                    "amount": str(float(prod_match.group(3)) * float(prod_match.group(5)))
+        for line in item_lines:
+            # 行から項目を抽出（スペースまたはタブで分割）
+            parts = re.split(r'\s{2,}|\t', line)
+            if len(parts) >= 4:  # 少なくとも品番、説明、数量、単価が必要
+                item = {
+                    "name": parts[1] if len(parts) > 1 else "",
+                    "quantity": _extract_number(parts[2]) if len(parts) > 2 else 0,
+                    "unit_price": _extract_number(parts[3]) if len(parts) > 3 else 0,
+                    "amount": _extract_number(parts[4]) if len(parts) > 4 else 0
                 }
-        
-        # 最後の製品を追加
-        if current_product and current_product.get("name"):
-            result["products"].append(current_product)
+                result["items"].append(item)
     
-    # 合計金額の抽出
-    total_match = re.search(r"(?i)Total\s*:?\s*\$?\s*([\d,.]+)", text)
-    if total_match:
-        result["totalAmount"] = total_match.group(1).replace(",", "")
-    
+    logger.debug(f"フォーマット1の抽出結果: {result}")
     return result
 
 def extract_format2_data(text: str) -> Dict[str, Any]:
     """
-    フォーマット2（一番上の行にPurchase Orderと記載）からPOデータを抽出
+    フォーマット2（Purchase Order形式）の発注書データを抽出
     
     Args:
         text: OCRで抽出されたテキスト
         
     Returns:
-        抽出されたPO情報を含む辞書
+        Dict: 抽出されたPOデータ
     """
-    logger.info("フォーマット2のPOデータ抽出を開始")
+    logger.debug("フォーマット2の抽出開始")
     
     result = {
         "customer": "",
-        "poNumber": "",
-        "destination": "",
-        "terms": "",
-        "products": [],
-        "totalAmount": "",
-        "paymentTerms": "",
-        "currency": ""
+        "po_number": "",
+        "currency": "",
+        "items": [],
+        "payment_terms": "",
+        "destination": ""
     }
     
-    # Buyer情報の抽出
-    buyer_match = re.search(r"(?i)Bill\s+To\s*:?\s*(.*?)(?:Ship\s+To|$)", text, re.DOTALL)
-    if buyer_match:
-        # 複数行に分かれている可能性があるので整形
-        buyer_text = buyer_match.group(1).strip()
-        buyer_lines = buyer_text.split("\n")
-        # 空行を削除し、先頭行を選択
-        buyer_lines = [line.strip() for line in buyer_lines if line.strip()]
-        if buyer_lines:
-            result["customer"] = buyer_lines[0]
+    # 顧客名の抽出（通常はヘッダーに記載）
+    lines = text.split('\n')
+    for i, line in enumerate(lines[:10]):  # 最初の10行を検索
+        if "purchase order" in line.lower():
+            if i + 1 < len(lines) and lines[i + 1].strip():
+                result["customer"] = lines[i + 1].strip()
+                break
     
     # PO番号の抽出
-    po_match = re.search(r"(?i)P\.?O\.?\s*(?:#|No\.?)?\s*[:\s]?\s*([A-Za-z0-9-]+)", text)
+    po_match = re.search(r"(?:p\.?o\.?\s*(?:number|no\.?)|order\s+number)[\s:#]*(\w+[-\s]?\w+)", text, re.IGNORECASE)
     if po_match:
-        result["poNumber"] = po_match.group(1).strip()
-    
-    # 仕向地の抽出（Ship Toセクションから）
-    ship_to_match = re.search(r"(?i)Ship\s+To\s*:?\s*(.*?)(?:\n\n|\n[A-Z]|$)", text, re.DOTALL)
-    if ship_to_match:
-        ship_to_text = ship_to_match.group(1).strip()
-        ship_to_lines = ship_to_text.split("\n")
-        if ship_to_lines:
-            result["destination"] = " ".join([line.strip() for line in ship_to_lines if line.strip()])
-    
-    # 支払条件の抽出
-    terms_match = re.search(r"(?i)Terms\s*:?\s*(.*?)(?:\n|$)", text)
-    if terms_match:
-        result["paymentTerms"] = terms_match.group(1).strip()
-    
-    # 出荷条件の抽出
-    shipping_match = re.search(r"(?i)Shipping\s+Terms\s*:?\s*(.*?)(?:\n|$)", text)
-    if shipping_match:
-        result["terms"] = shipping_match.group(1).strip()
+        result["po_number"] = po_match.group(1).strip()
     
     # 通貨の抽出
-    if re.search(r"(?i)USD|US\$|\$", text):
-        result["currency"] = "USD"
-    elif re.search(r"(?i)EUR|€", text):
-        result["currency"] = "EUR"
-    elif re.search(r"(?i)JPY|¥", text):
-        result["currency"] = "JPY"
+    currency_match = re.search(r"(?:currency|cur)[\s:]*(\w{3})", text, re.IGNORECASE)
+    if currency_match:
+        result["currency"] = currency_match.group(1).strip()
     
-    # 製品情報の抽出
-    # フォーマット2の表形式を解析
-    product_section = re.search(r"(?i)(Item.*?Qty.*?Price.*?Amount).*?(Total|Sub\-?total)", text, re.DOTALL)
-    if product_section:
-        product_text = product_section.group(0)
+    # 支払い条件の抽出
+    payment_match = re.search(r"(?:payment\s+terms?|term)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if payment_match:
+        result["payment_terms"] = payment_match.group(1).strip()
+    
+    # 仕向地の抽出
+    dest_match = re.search(r"(?:destination|ship\s+to|delivery\s+to)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if dest_match:
+        result["destination"] = dest_match.group(1).strip()
+    
+    # 商品情報の抽出
+    items_section = re.search(r"(?:item.*?description|product.*?description).*?(?:qty|quantity).*?(?:unit.*?price|price).*?(?:amount|total)(.*?)(?:total|grand\s+total)", text, re.IGNORECASE | re.DOTALL)
+    if items_section:
+        items_text = items_section.group(1).strip()
+        item_lines = [line.strip() for line in items_text.split('\n') if line.strip()]
         
-        # 行ごとに処理
-        lines = product_text.split("\n")
-        for i in range(1, len(lines)):  # ヘッダー行をスキップ
-            line = lines[i].strip()
-            if not line or re.search(r"(?i)(Total|Sub\-?total)", line):
-                continue
-                
-            # 製品情報の抽出パターン
-            prod_match = re.search(r"(\d+)\s+(.*?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)", line)
-            if prod_match:
-                product = {
-                    "name": prod_match.group(2).strip(),
-                    "quantity": prod_match.group(3),
-                    "unitPrice": prod_match.group(4),
-                    "amount": prod_match.group(5)
+        for line in item_lines:
+            # 行から項目を抽出
+            parts = re.split(r'\s{2,}|\t', line)
+            if len(parts) >= 3:  # 少なくとも説明、数量、単価が必要
+                item = {
+                    "name": parts[0] if len(parts) > 0 else "",
+                    "quantity": _extract_number(parts[1]) if len(parts) > 1 else 0,
+                    "unit_price": _extract_number(parts[2]) if len(parts) > 2 else 0,
+                    "amount": _extract_number(parts[3]) if len(parts) > 3 else 0
                 }
-                result["products"].append(product)
+                result["items"].append(item)
     
-    # 合計金額の抽出
-    total_match = re.search(r"(?i)Total\s*:?\s*\$?\s*([\d,.]+)", text)
-    if total_match:
-        result["totalAmount"] = total_match.group(1).replace(",", "")
-    
+    logger.debug(f"フォーマット2の抽出結果: {result}")
     return result
 
 def extract_format3_data(text: str) -> Dict[str, Any]:
     """
-    フォーマット3（///ORDER CONFIMATION ///と記載）からPOデータを抽出
+    フォーマット3（ORDER CONFIRMATION形式）の発注書データを抽出
     
     Args:
         text: OCRで抽出されたテキスト
         
     Returns:
-        抽出されたPO情報を含む辞書
+        Dict: 抽出されたPOデータ
     """
-    logger.info("フォーマット3のPOデータ抽出を開始")
+    logger.debug("フォーマット3の抽出開始")
     
     result = {
         "customer": "",
-        "poNumber": "",
-        "destination": "",
-        "terms": "",
-        "products": [],
-        "totalAmount": "",
-        "paymentTerms": "",
-        "currency": ""
+        "po_number": "",
+        "currency": "",
+        "items": [],
+        "payment_terms": "",
+        "destination": ""
     }
     
-    # Buyer情報の抽出（注文確認書のフォーマットによる）
-    buyer_match = re.search(r"(?i)CUSTOMER\s*:?\s*(.*?)(?:\n|$)", text)
-    if buyer_match:
-        result["customer"] = buyer_match.group(1).strip()
+    # 顧客名の抽出
+    customer_match = re.search(r"(?:customer|client|buyer)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if customer_match:
+        result["customer"] = customer_match.group(1).strip()
     
     # PO番号の抽出
-    po_match = re.search(r"(?i)ORDER\s+(?:NO\.?|NUMBER)\s*:?\s*([A-Za-z0-9-]+)", text)
+    po_match = re.search(r"(?:p\.?o\.?\s*(?:number|no\.?)|reference\s+no\.?|order\s+no\.?)[\s:#]*(\w+[-\s]?\w+)", text, re.IGNORECASE)
     if po_match:
-        result["poNumber"] = po_match.group(1).strip()
+        result["po_number"] = po_match.group(1).strip()
+    
+    # 通貨の抽出
+    currency_match = re.search(r"(?:currency|cur|in)[\s:]*(\w{3})", text, re.IGNORECASE)
+    if currency_match:
+        result["currency"] = currency_match.group(1).strip()
+    
+    # 支払い条件の抽出
+    payment_match = re.search(r"(?:payment\s+terms?|payment\s+condition|terms)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if payment_match:
+        result["payment_terms"] = payment_match.group(1).strip()
     
     # 仕向地の抽出
-    dest_match = re.search(r"(?i)PORT\s+OF\s+DISCHARGE\s*:?\s*(.*?)(?:\n|$)", text)
+    dest_match = re.search(r"(?:destination|ship\s+to|delivery\s+to|delivery\s+address)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
     if dest_match:
         result["destination"] = dest_match.group(1).strip()
     
-    # 出荷条件の抽出
-    ship_match = re.search(r"(?i)TERMS?\s*:?\s*(.*?)(?:\n|$)", text)
-    if ship_match:
-        result["terms"] = ship_match.group(1).strip()
+    # 商品情報の抽出
+    items_pattern = r"(?:item.*?description|product.*?name).*?(?:qty|quantity).*?(?:unit.*?price|price).*?(?:amount|subtotal)(.*?)(?:total|grand\s+total)"
+    items_section = re.search(items_pattern, text, re.IGNORECASE | re.DOTALL)
     
-    # 支払条件の抽出
-    pay_match = re.search(r"(?i)PAYMENT\s+TERMS?\s*:?\s*(.*?)(?:\n|$)", text)
-    if pay_match:
-        result["paymentTerms"] = pay_match.group(1).strip()
+    if not items_section:
+        # 代替パターンを試す
+        items_pattern = r"(?:order\s+details|ordered\s+items).*?(.*?)(?:total|grand\s+total)"
+        items_section = re.search(items_pattern, text, re.IGNORECASE | re.DOTALL)
     
-    # 通貨の抽出（通常USDが使用される）
-    result["currency"] = "USD"
-    
-    # 製品情報の抽出
-    grade_match = re.search(r"(?i)GRADE\s+([A-Za-z0-9]+)", text)
-    qty_match = re.search(r"(?i)QUANTITY\s*:?\s*([\d,.]+)\s*(?:MT|KG)", text)
-    price_match = re.search(r"(?i)UNIT\s+PRICE\s*:?\s*(?:USD)?\s*([\d,.]+)", text)
-    
-    if grade_match and qty_match:
-        product_name = f"Grade {grade_match.group(1)}"
-        quantity = qty_match.group(1).replace(",", "")
-        unit_price = price_match.group(1).replace(",", "") if price_match else "0"
-        amount = str(float(quantity) * float(unit_price)) if unit_price != "0" else ""
+    if items_section:
+        items_text = items_section.group(1).strip()
+        item_lines = [line.strip() for line in items_text.split('\n') if line.strip()]
         
-        result["products"].append({
-            "name": product_name,
-            "quantity": quantity,
-            "unitPrice": unit_price,
-            "amount": amount
-        })
+        for line in item_lines:
+            # 行から項目を抽出
+            parts = re.split(r'\s{2,}|\t', line)
+            if len(parts) >= 3:  # 少なくとも説明、数量、単価が必要
+                item = {
+                    "name": parts[0] if len(parts) > 0 else "",
+                    "quantity": _extract_number(parts[1]) if len(parts) > 1 else 0,
+                    "unit_price": _extract_number(parts[2]) if len(parts) > 2 else 0,
+                    "amount": _extract_number(parts[3]) if len(parts) > 3 else 0
+                }
+                result["items"].append(item)
     
-    # 合計金額の抽出
-    total_match = re.search(r"(?i)TOTAL\s+(?:AMOUNT|PRICE)\s*:?\s*(?:USD)?\s*([\d,.]+)", text)
-    if total_match:
-        result["totalAmount"] = total_match.group(1).replace(",", "")
-    
+    logger.debug(f"フォーマット3の抽出結果: {result}")
     return result
 
 def extract_generic_data(text: str) -> Dict[str, Any]:
     """
-    一般的なPOフォーマットからデータを抽出します（フォーマットが特定できない場合）
+    汎用的な方法で発注書データを抽出
     
     Args:
         text: OCRで抽出されたテキスト
         
     Returns:
-        抽出されたPO情報を含む辞書
+        Dict: 抽出されたPOデータ
     """
-    logger.info("汎用フォーマットのPOデータ抽出を開始")
+    logger.debug("汎用フォーマットの抽出開始")
     
     result = {
         "customer": "",
-        "poNumber": "",
-        "destination": "",
-        "terms": "",
-        "products": [],
-        "totalAmount": "",
-        "paymentTerms": "",
-        "currency": ""
+        "po_number": "",
+        "currency": "",
+        "items": [],
+        "payment_terms": "",
+        "destination": ""
     }
     
-    # 顧客名を抽出する複数の方法を試す
-    customer_patterns = [
-        r"(?:Customer|Client|Buyer|Company|Purchaser):\s*(.*?)(?:\n|$)",
-        r"(?:To|Bill to):\s*(.*?)(?:\n|$)",
-        r"Contract Party\s*:\s*(.*?)(?:\n|$)",
-        r"B/L CONSIGNEE\s*:\s*(.*?)(?:\n|$)",
-        r"ABC Company\s*(.*?)(?:\n|$)",
-        r"\(Buyer(?:'|')s Info\).*?([A-Za-z0-9\s]+Company)"
-    ]
-    
-    for pattern in customer_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["customer"] = match.group(1).strip()
-            break
-    
-    # PO番号の抽出
+    # PO番号の抽出 (複数のパターンを試す)
     po_patterns = [
-        r"(?:PO|Purchase Order|Order) (?:No|Number|#)\.?:?\s*(\w+[-\d]+)",
-        r"(?:PO|Purchase Order|Order) (?:No|Number|#)\.?:?\s*(\d+)",
-        r"Order No\.\s*(.*?)(?:\n|Grade|Origin)",
-        r"Buyers(?:'|')?\s+Order No\.\s*(.*?)(?:\n|Grade|$)"
+        r"p\.?o\.?\s*(?:number|no\.?)[\s:#]*(\w+[-\s]?\w+)",
+        r"order\s+(?:number|no\.?)[\s:#]*(\w+[-\s]?\w+)",
+        r"reference\s+(?:number|no\.?)[\s:#]*(\w+[-\s]?\w+)",
+        r"(?<=\n|\s)po[:#\s]*(\w+[-\s]?\w+)",
+        r"(?<=\n|\s)no[:#\s]*(\w+[-\s]?\w+)",
     ]
     
     for pattern in po_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["poNumber"] = match.group(1).strip()
+        po_match = re.search(pattern, text, re.IGNORECASE)
+        if po_match:
+            result["po_number"] = po_match.group(1).strip()
             break
     
-    # 配送先の抽出
-    destination_patterns = [
-        r"(?:Destination|Ship to|Delivery Address|Port of Discharge|Discharge Port|PORT OF DISCHARGE):\s*(.*?)(?:\n|$)",
-        r"(?:To|Deliver to):\s*(.*?)(?:\n|$)"
+    # 顧客名の抽出 (複数のパターンを試す)
+    customer_patterns = [
+        r"(?:customer|client|buyer|to)[\s:]*(.+?)(?:\n|$)",
+        r"(?:bill\s+to|sold\s+to)[\s:]*(.+?)(?:\n|$)",
+        r"(?:company|organization)[\s:]*(.+?)(?:\n|$)"
     ]
     
-    for pattern in destination_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["destination"] = match.group(1).strip()
-            break
-    
-    # 出荷条件の抽出
-    terms_patterns = [
-        r"(?:Incoterms|Inco Terms|Shipping Terms|Delivery Terms|Term):\s*(.*?)(?:\n|$)",
-        r"(?:CIF|FOB|EXW)\s+([A-Za-z\s]+)"
-    ]
-    
-    for pattern in terms_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["terms"] = match.group(1).strip()
-            break
-    
-    # 支払条件の抽出
-    payment_patterns = [
-        r"(?:Payment Terms?|Terms of Payment|Terms|Payment):\s*(.*?)(?:\n|$)",
-        r"Net Due within\s*(.*?)(?:\n|$)",
-        r"Payment term\s*\n?\s*(.*?)(?:\n|$)"
-    ]
-    
-    for pattern in payment_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["paymentTerms"] = match.group(1).strip()
+    for pattern in customer_patterns:
+        customer_match = re.search(pattern, text, re.IGNORECASE)
+        if customer_match:
+            result["customer"] = customer_match.group(1).strip()
             break
     
     # 通貨の抽出
-    if re.search(r"(?i)USD|US\$|\$", text):
-        result["currency"] = "USD"
-    elif re.search(r"(?i)EUR|€", text):
-        result["currency"] = "EUR"
-    elif re.search(r"(?i)JPY|¥", text):
-        result["currency"] = "JPY"
-    else:
-        result["currency"] = "USD"  # デフォルト
-    
-    # 製品情報の検出（単純なパターン）
-    product_patterns = [
-        # 商品コード、名称、数量、単価、金額が一行に並んでいるパターン
-        r"(\d+)\s+(.*?)\s+(\d+(?:\.\d+)?)\s+(\w+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)",
-        # 品名が先に来て、その後に数量、単価、金額が並ぶパターン
-        r"(.*?)\s+(\d+(?:\.\d+)?)\s*(?:pcs|units|kg|mt)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"
+    currency_patterns = [
+        r"(?:currency|cur)[\s:]*(\w{3})",
+        r"(?:amount|total)\s+in\s+(\w{3})",
+        r"(?:USD|EUR|JPY|GBP|CNY)"
     ]
     
-    products_found = False
-    
-    for pattern in product_patterns:
-        matches = re.finditer(pattern, text, re.MULTILINE)
-        for match in matches:
-            # パターンによって抽出位置が異なる
-            if len(match.groups()) >= 6:  # 最初のパターン
-                product = {
-                    "name": match.group(2).strip(),
-                    "quantity": match.group(3),
-                    "unitPrice": match.group(5),
-                    "amount": match.group(6)
-                }
-            else:  # 2番目のパターン
-                product = {
-                    "name": match.group(1).strip(),
-                    "quantity": match.group(2),
-                    "unitPrice": match.group(3),
-                    "amount": match.group(4)
-                }
-            
-            result["products"].append(product)
-            products_found = True
-    
-    # 製品情報が見つからない場合のフォールバック
-    if not products_found:
-        # 品名、数量、単価を個別に探す
-        product_name = ""
-        quantity = ""
-        unit_price = ""
-        
-        # 品名の検索
-        name_match = re.search(r"(?:Item|Product|Description):\s*(.*?)(?:\n|$)", text, re.IGNORECASE)
-        if name_match:
-            product_name = name_match.group(1).strip()
-        
-        # 数量の検索
-        qty_match = re.search(r"(?:Quantity|Qty):\s*([\d,.]+)\s*(?:pcs|units|kg|mt)?", text, re.IGNORECASE)
-        if qty_match:
-            quantity = qty_match.group(1).replace(",", "")
-        
-        # 単価の検索
-        price_match = re.search(r"(?:Unit Price|Price):\s*(?:USD|US\$)?\s*([\d,.]+)", text, re.IGNORECASE)
-        if price_match:
-            unit_price = price_match.group(1).replace(",", "")
-        
-        # 金額の計算（数量×単価）
-        amount = ""
-        if quantity and unit_price:
-            try:
-                amount = str(float(quantity) * float(unit_price))
-            except ValueError:
-                pass
-        
-        # 有効なデータがあれば製品情報を追加
-        if product_name or quantity or unit_price:
-            result["products"].append({
-                "name": product_name or "Unknown Product",
-                "quantity": quantity,
-                "unitPrice": unit_price,
-                "amount": amount
-            })
-    
-    # 合計金額の抽出
-    total_patterns = [
-        r"(?:Total|Grand Total):\s*(?:USD|US\$)?\s*([\d,.]+)",
-        r"Total Amount:\s*(?:USD|US\$)?\s*([\d,.]+)",
-        r"(?:[$]|USD)\s*([\d,.]+)(?:\s+total|\s+USD)",
-        r"TOTAL\s+(?:AMOUNT|PRICE)\s*:?\s*(?:USD)?\s*([\d,.]+)"
-    ]
-    
-    for pattern in total_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            result["totalAmount"] = match.group(1).replace(",", "")
+    for pattern in currency_patterns:
+        currency_match = re.search(pattern, text, re.IGNORECASE)
+        if currency_match:
+            result["currency"] = currency_match.group(1).strip() if pattern != r"(?:USD|EUR|JPY|GBP|CNY)" else currency_match.group(0)
             break
     
-    return result
-
-def validate_and_clean_result(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    抽出結果の検証とクリーニングを行い、無効な値を修正します。
+    # 支払い条件の抽出
+    payment_patterns = [
+        r"(?:payment\s+terms?|payment\s+condition)[\s:]*(.+?)(?:\n|$)",
+        r"(?:terms\s+of\s+payment)[\s:]*(.+?)(?:\n|$)",
+        r"(?:payment)[\s:]*(.+?)(?:\n|$)"
+    ]
     
-    Args:
-        result: 抽出された結果
+    for pattern in payment_patterns:
+        payment_match = re.search(pattern, text, re.IGNORECASE)
+        if payment_match:
+            result["payment_terms"] = payment_match.group(1).strip()
+            break
+    
+    # 仕向地の抽出
+    dest_patterns = [
+        r"(?:destination|ship\s+to|delivery\s+to)[\s:]*(.+?)(?:\n|$)",
+        r"(?:shipping\s+address|delivery\s+address)[\s:]*(.+?)(?:\n|$)",
+        r"(?:ship|deliver)[\s:]*(?:to)[\s:]*(.+?)(?:\n|$)"
+    ]
+    
+    for pattern in dest_patterns:
+        dest_match = re.search(pattern, text, re.IGNORECASE)
+        if dest_match:
+            result["destination"] = dest_match.group(1).strip()
+            break
+    
+    # 商品情報の抽出（多様なパターンに対応）
+    try:
+        # 数字とテキストが混在する行を抽出
+        lines = text.split('\n')
+        potential_items = []
         
-    Returns:
-        検証・クリーニング済みの結果
-    """
-    # 必須フィールドのデフォルト値設定
-    if not result.get("customer"):
-        result["customer"] = "Unknown Customer"
-    
-    if not result.get("poNumber"):
-        result["poNumber"] = "N/A"
-    
-    if not result.get("currency"):
-        result["currency"] = "USD"
-    
-    # 製品情報の検証と補完
-    if not result.get("products") or len(result["products"]) == 0:
-        # 製品情報がない場合、ダミーの製品情報を追加
-        result["products"] = [{
-            "name": "Unknown Product",
-            "quantity": "0",
-            "unitPrice": "0",
-            "amount": "0"
-        }]
-    else:
-        # 既存の製品情報をクリーニング
-        for i, product in enumerate(result["products"]):
-            # 製品名が空の場合
-            if not product.get("name"):
-                product["name"] = f"Product {i+1}"
+        for line in lines:
+            # 数値が2つ以上ある行を商品行の候補とする
+            numbers = re.findall(r'\d+(?:\.\d+)?', line)
+            if len(numbers) >= 2 and len(line.split()) >= 3:
+                potential_items.append(line)
+        
+        # 隣接する候補行をグループ化
+        item_groups = []
+        current_group = []
+        
+        for i, line in enumerate(lines):
+            if line in potential_items:
+                current_group.append(line)
+            elif current_group and i < len(lines) - 1 and lines[i + 1] in potential_items:
+                # 空行を1つ許容
+                continue
+            elif current_group:
+                item_groups.append(current_group)
+                current_group = []
+        
+        if current_group:
+            item_groups.append(current_group)
+        
+        # 最大のグループを商品テーブルと見なす
+        if item_groups:
+            largest_group = max(item_groups, key=len)
             
-            # 数量、単価、金額の数値チェックと変換
-            for field in ["quantity", "unitPrice", "amount"]:
-                if field not in product or not product[field]:
-                    product[field] = "0"
-                else:
-                    # 数値として解析可能か確認し、不可能な場合は0にする
-                    try:
-                        value = product[field].replace(",", "")
-                        float(value)  # 数値変換テスト
-                        product[field] = value
-                    except (ValueError, TypeError):
-                        product[field] = "0"
+            for line in largest_group:
+                parts = re.split(r'\s{2,}|\t', line)
+                # 数値を含む部分を抽出
+                quantity = unit_price = amount = 0
+                name = ""
+                
+                # 商品名は最初の部分と仮定
+                if parts:
+                    name = parts[0]
+                
+                # 数値を探して割り当て
+                numbers = [_extract_number(part) for part in parts]
+                numbers = [n for n in numbers if n > 0]
+                
+                if len(numbers) >= 3:
+                    # 通常は「数量、単価、金額」の順
+                    quantity, unit_price, amount = numbers[:3]
+                elif len(numbers) == 2:
+                    # 2つしかない場合は「数量、単価」と仮定
+                    quantity, unit_price = numbers
+                    amount = quantity * unit_price
+                
+                if quantity > 0:  # 数量が抽出できた場合のみ追加
+                    item = {
+                        "name": name,
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "amount": amount
+                    }
+                    result["items"].append(item)
+    except Exception as e:
+        logger.error(f"商品情報の抽出中にエラー発生: {str(e)}")
     
-    # 合計金額の計算と検証
-    if not result.get("totalAmount"):
-        # 製品の金額から合計を計算
-        try:
-            total = sum(float(product.get("amount", 0)) for product in result["products"])
-            result["totalAmount"] = str(total)
-        except (ValueError, TypeError):
-            result["totalAmount"] = "0"
-    else:
-        # 既存の合計金額の数値チェック
-        try:
-            value = result["totalAmount"].replace(",", "")
-            float(value)  # 数値変換テスト
-            result["totalAmount"] = value
-        except (ValueError, TypeError):
-            result["totalAmount"] = "0"
-    
+    logger.debug(f"汎用フォーマットの抽出結果: {result}")
     return result
 
-def analyze_extraction_quality(result: Dict[str, Any]) -> Dict[str, float]:
+def validate_and_clean_result(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    抽出結果の品質を分析します
+    抽出結果を検証してクリーニング
     
     Args:
-        result: 抽出された結果
+        data: 抽出されたPOデータ
         
     Returns:
-        品質分析結果（信頼度や完全性などの指標）
+        Dict: クリーニング済みのPOデータ
     """
-    # 必須フィールド
-    required_fields = ["customer", "poNumber", "totalAmount"]
-    # 推奨フィールド
-    recommended_fields = ["currency", "destination", "terms", "paymentTerms"]
+    logger.debug("抽出結果の検証とクリーニング開始")
     
-    # 必須フィールドの存在確認
-    required_score = sum(1 for field in required_fields if result.get(field) and result[field] != "N/A") / len(required_fields)
+    cleaned = data.copy()
     
-    # 推奨フィールドの存在確認
-    recommended_score = sum(1 for field in recommended_fields if result.get(field)) / len(recommended_fields)
+    # 文字列フィールドのクリーニング
+    for field in ["customer", "po_number", "currency", "payment_terms", "destination"]:
+        if field in cleaned and cleaned[field]:
+            # 余分な空白、タブ、改行を削除
+            cleaned[field] = re.sub(r'\s+', ' ', cleaned[field]).strip()
+            
+            # 不要な記号を削除（コロン、カンマなど）
+            if field == "po_number":
+                cleaned[field] = re.sub(r'^[:;,.\s]+|[:;,.\s]+$', '', cleaned[field])
     
-    # 製品情報の分析
-    product_fields = ["name", "quantity", "unitPrice", "amount"]
-    product_score = 0
+    # 数値の検証
+    if "items" in cleaned and cleaned["items"]:
+        for i, item in enumerate(cleaned["items"]):
+            # 数量が0または非常に大きい場合は修正
+            if "quantity" in item:
+                if item["quantity"] <= 0 or item["quantity"] > 10000:
+                    # 商品名から数量を探す試み
+                    if "name" in item and item["name"]:
+                        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units|qty)', item["name"], re.IGNORECASE)
+                        if qty_match:
+                            try:
+                                cleaned["items"][i]["quantity"] = float(qty_match.group(1))
+                                # 抽出した部分を商品名から削除
+                                cleaned["items"][i]["name"] = re.sub(r'\s*\d+(?:\.\d+)?\s*(?:pcs|pieces|units|qty)', '', item["name"], flags=re.IGNORECASE)
+                            except (ValueError, TypeError):
+                                pass
+            
+            # 単価と金額の計算確認
+            if "quantity" in item and "unit_price" in item and "amount" in item:
+                if item["amount"] <= 0 and item["quantity"] > 0 and item["unit_price"] > 0:
+                    # 金額を計算
+                    cleaned["items"][i]["amount"] = round(item["quantity"] * item["unit_price"], 2)
+                elif item["unit_price"] <= 0 and item["quantity"] > 0 and item["amount"] > 0:
+                    # 単価を計算
+                    cleaned["items"][i]["unit_price"] = round(item["amount"] / item["quantity"], 2)
     
-    if result.get("products") and len(result["products"]) > 0:
-        valid_products = 0
-        for product in result["products"]:
-            # 各製品フィールドのスコア
-            field_score = sum(1 for field in product_fields if product.get(field) and product[field] != "0" and product[field] != "Unknown Product") / len(product_fields)
-            valid_products += field_score
-        
-        product_score = valid_products / len(result["products"])
+    # 通貨が検出されなかった場合のデフォルト設定
+    if not cleaned.get("currency"):
+        # 金額から通貨を推測
+        if cleaned.get("items") and any(item.get("amount") > 0 for item in cleaned["items"]):
+            # 金額の範囲で予測
+            amounts = [item.get("amount") for item in cleaned["items"] if item.get("amount") > 0]
+            if amounts:
+                avg_amount = sum(amounts) / len(amounts)
+                if avg_amount < 10:  # 非常に小さい金額
+                    cleaned["currency"] = "JPY"  # 仮定
+                elif avg_amount < 1000:
+                    cleaned["currency"] = "USD"  # 仮定
+                else:
+                    cleaned["currency"] = "JPY"  # 仮定
     
-    # 総合スコア（重み付け）
-    completeness = 0.4 * required_score + 0.3 * recommended_score + 0.3 * product_score
-    
-    # 信頼度（完全性に基づいて計算）
-    confidence = completeness * 0.8  # 最大80%の信頼度（残りの20%は人間のレビューに委ねる）
-    
-    return {
-        "completeness": completeness,
-        "confidence": confidence,
-        "required_fields_score": required_score,
-        "recommended_fields_score": recommended_score,
-        "product_info_score": product_score
-    }
+    logger.debug(f"抽出結果のクリーニング完了: {cleaned}")
+    return cleaned
 
-def get_extraction_stats(ocr_text: str, result: Dict[str, Any]) -> Dict[str, Any]:
+def analyze_extraction_quality(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    OCR抽出に関する統計情報を取得します
+    抽出結果の品質を分析
     
     Args:
-        ocr_text: OCRで抽出したテキスト
-        result: 抽出された結果
+        data: 抽出されたPOデータ
         
     Returns:
-        抽出に関する統計情報
+        Dict: 品質分析結果
     """
-    # フォーマット判定
-    po_format = identify_po_format(ocr_text)
+    logger.debug("抽出品質の分析開始")
     
-    # 必須フィールドの検出率
-    required_fields = ["customer", "poNumber", "totalAmount"]
-    fields_detected = sum(1 for field in required_fields if result.get(field) and result[field] != "N/A")
-    
-    # 製品情報の分析
-    product_count = len(result.get("products", []))
-    
-    # 抽出品質の分析
-    quality = analyze_extraction_quality(result)
-    
-    # 文字認識の質の推定
-    text_length = len(ocr_text)
-    text_quality = min(1.0, max(0.1, text_length / 5000))  # テキスト量に基づく簡易的な推定
-    
-    # 改行やスペースの検出（構造化データの目安）
-    structure_quality = min(1.0, ocr_text.count("\n") / 50)
-    
-    # フォーマット候補を取得
-    format_candidates = []
-    if po_format == "format1":
-        format_candidates = ["Buyer's Info Style"]
-    elif po_format == "format2":
-        format_candidates = ["Purchase Order Header Style"]
-    elif po_format == "format3":
-        format_candidates = ["Order Confirmation Style"]
-    else:
-        format_candidates = ["Generic PO Format"]
-    
-    return {
-        "text_quality": text_quality,
-        "structure_quality": structure_quality,
-        "format": po_format,
-        "format_candidates": format_candidates,
-        "fields_detected": fields_detected,
-        "total_fields": len(required_fields),
-        "product_count": product_count,
-        "extraction_quality": quality,
-        "completeness": quality["completeness"],
-        "confidence": quality["confidence"]
+    quality = {
+        "completeness": 0,
+        "missing_fields": [],
+        "confidence": {
+            "customer": 0,
+            "po_number": 0,
+            "currency": 0,
+            "items": 0,
+            "payment_terms": 0,
+            "destination": 0
+        },
+        "suggestions": []
     }
+    
+    # 必須フィールドの存在チェック
+    required_fields = ["customer", "po_number"]
+    recommended_fields = ["currency", "payment_terms", "destination"]
+    
+    # 必須フィールドの完全性チェック
+    missing_required = [field for field in required_fields if not data.get(field)]
+    missing_recommended = [field for field in recommended_fields if not data.get(field)]
+    
+    quality["missing_fields"] = missing_required + missing_recommended
+    
+    # 商品情報のチェック
+    items = data.get("items", [])
+    if not items:
+        quality["missing_fields"].append("items")
+    else:
+        # 商品情報の完全性チェック
+        incomplete_items = []
+        for i, item in enumerate(items):
+            if not all(key in item and item[key] for key in ["name", "quantity", "unit_price"]):
+                incomplete_items.append(i)
+        
+        if incomplete_items:
+            quality["suggestions"].append(f"商品 {', '.join(map(str, incomplete_items))} の情報が不完全です")
+    
+    # 完全性スコアの計算
+    total_fields = len(required_fields) + len(recommended_fields) + (1 if items else 0)
+    present_fields = (
+        len(required_fields) - len([f for f in missing_required]) +
+        len(recommended_fields) - len([f for f in missing_recommended]) +
+        (1 if items and not "items" in quality["missing_fields"] else 0)
+    )
+    
+    quality["completeness"] = round((present_fields / total_fields) * 100) if total_fields > 0 else 0
+    
+    # 各フィールドの信頼度評価
+    for field in required_fields + recommended_fields:
+        if field in data and data[field]:
+            # 長さと内容に基づく基本的な信頼度評価
+            value = data[field]
+            if isinstance(value, str):
+                # 長すぎる/短すぎる値は信頼度が低い
+                if len(value) > 100 or len(value) < 2:
+                    quality["confidence"][field] = 30
+                # 標準的な長さは信頼度が高い
+                elif 3 <= len(value) <= 50:
+                    quality["confidence"][field] = 90
+                else:
+                    quality["confidence"][field] = 70
+            else:
+                quality["confidence"][field] = 80
+    
+    # 商品情報の信頼度評価
+    if items:
+        valid_items = len([item for item in items if all(key in item and item[key] for key in ["name", "quantity", "unit_price"])])
+        quality["confidence"]["items"] = round((valid_items / len(items)) * 100) if items else 0
+    
+    # 改善提案の追加
+    if missing_required:
+        quality["suggestions"].append(f"必須フィールド {', '.join(missing_required)} が欠落しています")
+    
+    if missing_recommended:
+        quality["suggestions"].append(f"推奨フィールド {', '.join(missing_recommended)} が欠落しています")
+    
+    if quality["completeness"] < 60:
+        quality["suggestions"].append("抽出品質が低いため、手動での確認が必要です")
+    
+    logger.debug(f"抽出品質の分析結果: {quality}")
+    return quality
+
+def get_extraction_stats(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    抽出結果の統計情報を取得
+    
+    Args:
+        data: 抽出されたPOデータ
+        
+    Returns:
+        Dict: 統計情報
+    """
+    logger.debug("抽出統計情報の計算開始")
+    
+    stats = {
+        "extracted_fields_count": 0,
+        "items_count": 0,
+        "total_amount": 0,
+        "extraction_timestamp": None
+    }
+    
+    # 抽出されたフィールド数をカウント
+    for field in ["customer", "po_number", "currency", "payment_terms", "destination"]:
+        if field in data and data[field]:
+            stats["extracted_fields_count"] += 1
+    
+    # 商品数と合計金額の計算
+    items = data.get("items", [])
+    stats["items_count"] = len(items)
+    
+    if items:
+        stats["total_amount"] = sum(item.get("amount", 0) for item in items)
+    
+    # タイムスタンプの設定
+    stats["extraction_timestamp"] = datetime.now().isoformat()
+    
+    logger.debug(f"抽出統計情報: {stats}")
+    return stats
+
+def _extract_number(text: str) -> float:
+    """
+    テキストから数値を抽出する補助関数
+    
+    Args:
+        text: 数値を含む可能性のあるテキスト
+        
+    Returns:
+        float: 抽出された数値、抽出できない場合は0
+    """
+    if not text:
+        return 0
+    
+    # 様々な数値フォーマットに対応
+    # 1,234.56や1.234,56などの形式に対応
+    text = str(text).strip()
+    
+    # カンマとピリオドの位置を確認
+    comma_pos = text.rfind(',')
+    period_pos = text.rfind('.')
+    
+    # 正規化された数値テキスト
+    normalized_text = text
+    
+    # カンマとピリオドの扱いを決定
+    if comma_pos > 0 and period_pos > 0:
+        # 両方存在する場合、位置で判断
+        if comma_pos > period_pos:
+            # 1.234,56 形式 -> 1234.56
+            normalized_text = text.replace('.', '').replace(',', '.')
+        else:
+            # 1,234.56 形式 -> そのまま、カンマだけ除去
+            normalized_text = text.replace(',', '')
+    elif comma_pos > 0:
+        # カンマのみの場合
+        if comma_pos == len(text) - 3:  # 最後から3番目がカンマなら小数点と見なす
+            # 1234,56 -> 1234.56
+            normalized_text = text.replace(',', '.')
+        else:
+            # 1,234 -> 1234
+            normalized_text = text.replace(',', '')
+    # ピリオドのみの場合はそのまま
+    
+    # 数値以外の文字を除去
+    normalized_text = re.sub(r'[^\d.]', '', normalized_text)
+    
+    try:
+        return float(normalized_text) if normalized_text else 0
+    except (ValueError, TypeError):
+        return 0
