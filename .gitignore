@@ -20,7 +20,6 @@ __pycache__/
 *$py.class
 /backend/__pycache__/
 /backend/**/__pycache__/
-/backend/venv/
 /backend/ocr_temp/
 /backend/uploads/
 /backend/test_results/
