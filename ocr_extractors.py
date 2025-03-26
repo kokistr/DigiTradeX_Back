@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 
 # ロギング設定
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)  # DEBUGからINFOに変更
 logger = logging.getLogger(__name__)
 
 def identify_po_format(text: str) -> str:
@@ -64,10 +64,10 @@ def extract_format1_data(text: str) -> Dict[str, Any]:
     logger.debug("フォーマット1の抽出開始")
     
     result = {
-        "customer": "",
+        "customer_name": "",  # customerからcustomer_nameに変更
         "po_number": "",
         "currency": "",
-        "items": [],
+        "products": [],  # itemsからproductsに変更
         "payment_terms": "",
         "destination": ""
     }
@@ -75,7 +75,7 @@ def extract_format1_data(text: str) -> Dict[str, Any]:
     # 顧客名の抽出（Buyer's Infoセクションの下）
     buyer_match = re.search(r"buyer['']?s\s+info.*?\n(.*?)\n", text, re.IGNORECASE | re.DOTALL)
     if buyer_match:
-        result["customer"] = buyer_match.group(1).strip()
+        result["customer_name"] = buyer_match.group(1).strip()
     
     # PO番号の抽出
     po_match = re.search(r"p\.?o\.?\s*no\.?[\s:#]*([\w\d\-]+)", text, re.IGNORECASE)
@@ -108,12 +108,12 @@ def extract_format1_data(text: str) -> Dict[str, Any]:
             parts = re.split(r'\s{2,}|\t', line)
             if len(parts) >= 4:  # 少なくとも品番、説明、数量、単価が必要
                 item = {
-                    "name": parts[1] if len(parts) > 1 else "",
+                    "product_name": parts[1] if len(parts) > 1 else "",  # nameからproduct_nameに変更
                     "quantity": _extract_number(parts[2]) if len(parts) > 2 else 0,
                     "unit_price": _extract_number(parts[3]) if len(parts) > 3 else 0,
-                    "amount": _extract_number(parts[4]) if len(parts) > 4 else 0
+                    "subtotal": _extract_number(parts[4]) if len(parts) > 4 else 0  # amountからsubtotalに変更
                 }
-                result["items"].append(item)
+                result["products"].append(item)
     
     logger.debug(f"フォーマット1の抽出結果: {result}")
     return result
@@ -131,10 +131,10 @@ def extract_format2_data(text: str) -> Dict[str, Any]:
     logger.debug("フォーマット2の抽出開始")
     
     result = {
-        "customer": "",
+        "customer_name": "",  # customerからcustomer_nameに変更
         "po_number": "",
         "currency": "",
-        "items": [],
+        "products": [],  # itemsからproductsに変更
         "payment_terms": "",
         "destination": ""
     }
@@ -144,7 +144,7 @@ def extract_format2_data(text: str) -> Dict[str, Any]:
     for i, line in enumerate(lines[:10]):  # 最初の10行を検索
         if "purchase order" in line.lower():
             if i + 1 < len(lines) and lines[i + 1].strip():
-                result["customer"] = lines[i + 1].strip()
+                result["customer_name"] = lines[i + 1].strip()
                 break
     
     # PO番号の抽出
@@ -178,12 +178,12 @@ def extract_format2_data(text: str) -> Dict[str, Any]:
             parts = re.split(r'\s{2,}|\t', line)
             if len(parts) >= 3:  # 少なくとも説明、数量、単価が必要
                 item = {
-                    "name": parts[0] if len(parts) > 0 else "",
+                    "product_name": parts[0] if len(parts) > 0 else "",  # nameからproduct_nameに変更
                     "quantity": _extract_number(parts[1]) if len(parts) > 1 else 0,
                     "unit_price": _extract_number(parts[2]) if len(parts) > 2 else 0,
-                    "amount": _extract_number(parts[3]) if len(parts) > 3 else 0
+                    "subtotal": _extract_number(parts[3]) if len(parts) > 3 else 0  # amountからsubtotalに変更
                 }
-                result["items"].append(item)
+                result["products"].append(item)
     
     logger.debug(f"フォーマット2の抽出結果: {result}")
     return result
@@ -201,10 +201,10 @@ def extract_format3_data(text: str) -> Dict[str, Any]:
     logger.debug("フォーマット3の抽出開始")
     
     result = {
-        "customer": "",
+        "customer_name": "",  # customerからcustomer_nameに変更
         "po_number": "",
         "currency": "",
-        "items": [],
+        "products": [],  # itemsからproductsに変更
         "payment_terms": "",
         "destination": ""
     }
@@ -212,7 +212,7 @@ def extract_format3_data(text: str) -> Dict[str, Any]:
     # 顧客名の抽出
     customer_match = re.search(r"(?:customer|client|buyer)[\s:]*(.+?)(?:\n|$)", text, re.IGNORECASE)
     if customer_match:
-        result["customer"] = customer_match.group(1).strip()
+        result["customer_name"] = customer_match.group(1).strip()
     
     # PO番号の抽出
     po_match = re.search(r"(?:p\.?o\.?\s*(?:number|no\.?)|reference\s+no\.?|order\s+no\.?)[\s:#]*(\w+[-\s]?\w+)", text, re.IGNORECASE)
@@ -252,12 +252,12 @@ def extract_format3_data(text: str) -> Dict[str, Any]:
             parts = re.split(r'\s{2,}|\t', line)
             if len(parts) >= 3:  # 少なくとも説明、数量、単価が必要
                 item = {
-                    "name": parts[0] if len(parts) > 0 else "",
+                    "product_name": parts[0] if len(parts) > 0 else "",  # nameからproduct_nameに変更
                     "quantity": _extract_number(parts[1]) if len(parts) > 1 else 0,
                     "unit_price": _extract_number(parts[2]) if len(parts) > 2 else 0,
-                    "amount": _extract_number(parts[3]) if len(parts) > 3 else 0
+                    "subtotal": _extract_number(parts[3]) if len(parts) > 3 else 0  # amountからsubtotalに変更
                 }
-                result["items"].append(item)
+                result["products"].append(item)
     
     logger.debug(f"フォーマット3の抽出結果: {result}")
     return result
@@ -275,10 +275,10 @@ def extract_generic_data(text: str) -> Dict[str, Any]:
     logger.debug("汎用フォーマットの抽出開始")
     
     result = {
-        "customer": "",
+        "customer_name": "",  # customerからcustomer_nameに変更
         "po_number": "",
         "currency": "",
-        "items": [],
+        "products": [],  # itemsからproductsに変更
         "payment_terms": "",
         "destination": ""
     }
@@ -308,7 +308,7 @@ def extract_generic_data(text: str) -> Dict[str, Any]:
     for pattern in customer_patterns:
         customer_match = re.search(pattern, text, re.IGNORECASE)
         if customer_match:
-            result["customer"] = customer_match.group(1).strip()
+            result["customer_name"] = customer_match.group(1).strip()
             break
     
     # 通貨の抽出
@@ -386,12 +386,12 @@ def extract_generic_data(text: str) -> Dict[str, Any]:
             for line in largest_group:
                 parts = re.split(r'\s{2,}|\t', line)
                 # 数値を含む部分を抽出
-                quantity = unit_price = amount = 0
-                name = ""
+                quantity = unit_price = subtotal = 0  # amountからsubtotalに変更
+                product_name = ""  # nameからproduct_nameに変更
                 
                 # 商品名は最初の部分と仮定
                 if parts:
-                    name = parts[0]
+                    product_name = parts[0]
                 
                 # 数値を探して割り当て
                 numbers = [_extract_number(part) for part in parts]
@@ -399,20 +399,20 @@ def extract_generic_data(text: str) -> Dict[str, Any]:
                 
                 if len(numbers) >= 3:
                     # 通常は「数量、単価、金額」の順
-                    quantity, unit_price, amount = numbers[:3]
+                    quantity, unit_price, subtotal = numbers[:3]
                 elif len(numbers) == 2:
                     # 2つしかない場合は「数量、単価」と仮定
                     quantity, unit_price = numbers
-                    amount = quantity * unit_price
+                    subtotal = quantity * unit_price
                 
                 if quantity > 0:  # 数量が抽出できた場合のみ追加
                     item = {
-                        "name": name,
+                        "product_name": product_name,  # nameからproduct_nameに変更
                         "quantity": quantity,
                         "unit_price": unit_price,
-                        "amount": amount
+                        "subtotal": subtotal  # amountからsubtotalに変更
                     }
-                    result["items"].append(item)
+                    result["products"].append(item)
     except Exception as e:
         logger.error(f"商品情報の抽出中にエラー発生: {str(e)}")
     
@@ -434,7 +434,8 @@ def validate_and_clean_result(data: Dict[str, Any]) -> Dict[str, Any]:
     cleaned = data.copy()
     
     # 文字列フィールドのクリーニング
-    for field in ["customer", "po_number", "currency", "payment_terms", "destination"]:
+    string_fields = ["customer_name", "po_number", "currency", "payment_terms", "destination"]  # customerからcustomer_nameに変更
+    for field in string_fields:
         if field in cleaned and cleaned[field]:
             # 余分な空白、タブ、改行を削除
             cleaned[field] = re.sub(r'\s+', ' ', cleaned[field]).strip()
@@ -444,37 +445,37 @@ def validate_and_clean_result(data: Dict[str, Any]) -> Dict[str, Any]:
                 cleaned[field] = re.sub(r'^[:;,.\s]+|[:;,.\s]+$', '', cleaned[field])
     
     # 数値の検証
-    if "items" in cleaned and cleaned["items"]:
-        for i, item in enumerate(cleaned["items"]):
+    if "products" in cleaned and cleaned["products"]:  # itemsからproductsに変更
+        for i, item in enumerate(cleaned["products"]):  # itemsからproductsに変更
             # 数量が0または非常に大きい場合は修正
             if "quantity" in item:
                 if item["quantity"] <= 0 or item["quantity"] > 10000:
                     # 商品名から数量を探す試み
-                    if "name" in item and item["name"]:
-                        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units|qty)', item["name"], re.IGNORECASE)
+                    if "product_name" in item and item["product_name"]:  # nameからproduct_nameに変更
+                        qty_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units|qty)', item["product_name"], re.IGNORECASE)
                         if qty_match:
                             try:
-                                cleaned["items"][i]["quantity"] = float(qty_match.group(1))
+                                cleaned["products"][i]["quantity"] = float(qty_match.group(1))
                                 # 抽出した部分を商品名から削除
-                                cleaned["items"][i]["name"] = re.sub(r'\s*\d+(?:\.\d+)?\s*(?:pcs|pieces|units|qty)', '', item["name"], flags=re.IGNORECASE)
+                                cleaned["products"][i]["product_name"] = re.sub(r'\s*\d+(?:\.\d+)?\s*(?:pcs|pieces|units|qty)', '', item["product_name"], flags=re.IGNORECASE)
                             except (ValueError, TypeError):
                                 pass
             
             # 単価と金額の計算確認
-            if "quantity" in item and "unit_price" in item and "amount" in item:
-                if item["amount"] <= 0 and item["quantity"] > 0 and item["unit_price"] > 0:
+            if "quantity" in item and "unit_price" in item and "subtotal" in item:  # amountからsubtotalに変更
+                if item["subtotal"] <= 0 and item["quantity"] > 0 and item["unit_price"] > 0:  # amountからsubtotalに変更
                     # 金額を計算
-                    cleaned["items"][i]["amount"] = round(item["quantity"] * item["unit_price"], 2)
-                elif item["unit_price"] <= 0 and item["quantity"] > 0 and item["amount"] > 0:
+                    cleaned["products"][i]["subtotal"] = round(item["quantity"] * item["unit_price"], 2)  # amountからsubtotalに変更
+                elif item["unit_price"] <= 0 and item["quantity"] > 0 and item["subtotal"] > 0:  # amountからsubtotalに変更
                     # 単価を計算
-                    cleaned["items"][i]["unit_price"] = round(item["amount"] / item["quantity"], 2)
+                    cleaned["products"][i]["unit_price"] = round(item["subtotal"] / item["quantity"], 2)  # amountからsubtotalに変更
     
     # 通貨が検出されなかった場合のデフォルト設定
     if not cleaned.get("currency"):
         # 金額から通貨を推測
-        if cleaned.get("items") and any(item.get("amount") > 0 for item in cleaned["items"]):
+        if cleaned.get("products") and any(item.get("subtotal") > 0 for item in cleaned["products"]):  # itemsからproducts、amountからsubtotalに変更
             # 金額の範囲で予測
-            amounts = [item.get("amount") for item in cleaned["items"] if item.get("amount") > 0]
+            amounts = [item.get("subtotal") for item in cleaned["products"] if item.get("subtotal") > 0]  # itemsからproducts、amountからsubtotalに変更
             if amounts:
                 avg_amount = sum(amounts) / len(amounts)
                 if avg_amount < 10:  # 非常に小さい金額
@@ -503,10 +504,10 @@ def analyze_extraction_quality(data: Dict[str, Any]) -> Dict[str, Any]:
         "completeness": 0,
         "missing_fields": [],
         "confidence": {
-            "customer": 0,
+            "customer_name": 0,  # customerからcustomer_nameに変更
             "po_number": 0,
             "currency": 0,
-            "items": 0,
+            "products": 0,  # itemsからproductsに変更
             "payment_terms": 0,
             "destination": 0
         },
@@ -514,7 +515,7 @@ def analyze_extraction_quality(data: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     # 必須フィールドの存在チェック
-    required_fields = ["customer", "po_number"]
+    required_fields = ["customer_name", "po_number"]  # customerからcustomer_nameに変更
     recommended_fields = ["currency", "payment_terms", "destination"]
     
     # 必須フィールドの完全性チェック
@@ -524,25 +525,25 @@ def analyze_extraction_quality(data: Dict[str, Any]) -> Dict[str, Any]:
     quality["missing_fields"] = missing_required + missing_recommended
     
     # 商品情報のチェック
-    items = data.get("items", [])
-    if not items:
-        quality["missing_fields"].append("items")
+    products = data.get("products", [])  # itemsからproductsに変更
+    if not products:
+        quality["missing_fields"].append("products")  # itemsからproductsに変更
     else:
         # 商品情報の完全性チェック
         incomplete_items = []
-        for i, item in enumerate(items):
-            if not all(key in item and item[key] for key in ["name", "quantity", "unit_price"]):
+        for i, item in enumerate(products):
+            if not all(key in item and item[key] for key in ["product_name", "quantity", "unit_price"]):  # nameからproduct_nameに変更
                 incomplete_items.append(i)
         
         if incomplete_items:
             quality["suggestions"].append(f"商品 {', '.join(map(str, incomplete_items))} の情報が不完全です")
     
     # 完全性スコアの計算
-    total_fields = len(required_fields) + len(recommended_fields) + (1 if items else 0)
+    total_fields = len(required_fields) + len(recommended_fields) + (1 if products else 0)  # itemsからproductsに変更
     present_fields = (
         len(required_fields) - len([f for f in missing_required]) +
         len(recommended_fields) - len([f for f in missing_recommended]) +
-        (1 if items and not "items" in quality["missing_fields"] else 0)
+        (1 if products and not "products" in quality["missing_fields"] else 0)  # itemsからproductsに変更
     )
     
     quality["completeness"] = round((present_fields / total_fields) * 100) if total_fields > 0 else 0
@@ -565,9 +566,9 @@ def analyze_extraction_quality(data: Dict[str, Any]) -> Dict[str, Any]:
                 quality["confidence"][field] = 80
     
     # 商品情報の信頼度評価
-    if items:
-        valid_items = len([item for item in items if all(key in item and item[key] for key in ["name", "quantity", "unit_price"])])
-        quality["confidence"]["items"] = round((valid_items / len(items)) * 100) if items else 0
+    if products:  # itemsからproductsに変更
+        valid_items = len([item for item in products if all(key in item and item[key] for key in ["product_name", "quantity", "unit_price"])])  # nameからproduct_name
+        quality["confidence"]["products"] = round((valid_items / len(products)) * 100) if products else 0  # itemsからproductsに変更
     
     # 改善提案の追加
     if missing_required:
@@ -602,16 +603,16 @@ def get_extraction_stats(data: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     # 抽出されたフィールド数をカウント
-    for field in ["customer", "po_number", "currency", "payment_terms", "destination"]:
+    for field in ["customer_name", "po_number", "currency", "payment_terms", "destination"]:  # customerからcustomer_nameに変更
         if field in data and data[field]:
             stats["extracted_fields_count"] += 1
     
     # 商品数と合計金額の計算
-    items = data.get("items", [])
-    stats["items_count"] = len(items)
+    products = data.get("products", [])  # itemsからproductsに変更
+    stats["items_count"] = len(products)
     
-    if items:
-        stats["total_amount"] = sum(item.get("amount", 0) for item in items)
+    if products:
+        stats["total_amount"] = sum(item.get("subtotal", 0) for item in products)  # amountからsubtotalに変更
     
     # タイムスタンプの設定
     stats["extraction_timestamp"] = datetime.now().isoformat()
