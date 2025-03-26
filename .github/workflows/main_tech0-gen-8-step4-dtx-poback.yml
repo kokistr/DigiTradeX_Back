@@ -29,7 +29,7 @@ jobs:
         run: zip -r release.zip . -x "venv/*" "*.git*"
       
       - name: Upload artifact for deployment
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2
         with:
           name: python-app
           path: release.zip
@@ -43,7 +43,7 @@ jobs:
     
     steps:
       - name: Download artifact from build job
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v2
         with:
           name: python-app
       
