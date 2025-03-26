@@ -7,6 +7,7 @@ import logging
 import shutil
 import uuid
 import json
+import threading
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 from datetime import datetime
@@ -180,11 +181,40 @@ def process_file_background(file_path: str, job_id: str):
         logger.info(f"バックグラウンド処理開始: {job_id}")
         
         # OCR処理を実行
-        result = process_po_file(file_path)
-        
-        # 結果を保存
-        jobs_status[job_id] = result
-        logger.info(f"バックグラウンド処理完了: {job_id}")
+        try:
+            result = process_po_file(file_path)
+            
+            # 結果を保存
+            jobs_status[job_id] = result
+            logger.info(f"バックグラウンド処理完了: {job_id}")
+        except Exception as ocr_error:
+            logger.error(f"OCR処理エラー: {str(ocr_error)}")
+            # バックアップ処理: シンプルなOCR処理を試行
+            try:
+                logger.info("代替OCR処理を試行中...")
+                # テキスト抽出
+                ocr_text = process_document(file_path)
+                
+                # POデータ抽出
+                po_data = extract_po_data(ocr_text)
+                
+                # 結果を保存
+                jobs_status[job_id] = {
+                    "id": job_id,
+                    "status": "completed",
+                    "data": po_data,
+                    "timestamp": datetime.now().isoformat(),
+                    "note": "代替抽出処理で生成されました"
+                }
+                logger.info(f"代替OCR処理完了: {job_id}")
+            except Exception as backup_error:
+                logger.error(f"代替OCR処理も失敗: {str(backup_error)}")
+                jobs_status[job_id] = {
+                    "id": job_id,
+                    "status": "error",
+                    "error": f"OCR処理エラー: {str(ocr_error)}、代替処理エラー: {str(backup_error)}",
+                    "timestamp": datetime.now().isoformat()
+                }
     
     except Exception as e:
         logger.error(f"バックグラウンド処理エラー: {str(e)}")
@@ -341,8 +371,43 @@ async def get_ocr_result(job_id: str):
         if status.get("status") == "completed":
             # データがある場合はそれを返す
             if "data" in status:
-                # データベース名と一致する形式で直接データを返す
-                return JSONResponse(content=status["data"])
+                # データベースと完全互換の形式を確保
+                data = status["data"]
+                
+                # 必要なフィールドが確実に存在するようにする
+                required_fields = {
+                    "customer_name": str,
+                    "po_number": str,
+                    "currency": str,
+                    "total_amount": str,
+                    "payment_terms": str,
+                    "shipping_terms": str,
+                    "destination": str,
+                    "products": list
+                }
+                
+                # 各フィールドを保証
+                for field, field_type in required_fields.items():
+                    if field not in data or not isinstance(data.get(field), field_type):
+                        if field == "products":
+                            data[field] = []
+                        else:
+                            data[field] = "" if field_type == str else "0" if field in ["total_amount"] else ""
+                
+                # 製品情報も確認
+                for i, product in enumerate(data.get("products", [])):
+                    product_fields = {
+                        "product_name": str,
+                        "quantity": str,
+                        "unit_price": str,
+                        "subtotal": str
+                    }
+                    
+                    for field, field_type in product_fields.items():
+                        if field not in product or not isinstance(product.get(field), field_type):
+                            data["products"][i][field] = "" if field_type == str else "0" if field in ["quantity", "unit_price", "subtotal"] else ""
+                
+                return JSONResponse(content=data)
             else:
                 # データがない場合はエラーを返す
                 return JSONResponse(
