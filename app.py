@@ -673,7 +673,48 @@ async def delete_po(request: Request, db: Session = Depends(get_db)):
             status_code=500,
             content={"message": f"Error deleting PO: {str(e)}"}
         )
-
+@app.get("/api/debug/ocr/{job_id}")
+async def debug_ocr_job(job_id: str):
+    """OCRジョブのデバッグ情報を提供するエンドポイント"""
+    try:
+        # OCRジョブ情報の取得を試みる
+        job_path = os.path.join(UPLOAD_FOLDER, job_id)
+        ocr_status_path = f"{job_path}.status"
+        ocr_result_path = f"{job_path}.result"
+        
+        # 各ファイルの存在確認
+        job_exists = os.path.exists(job_path)
+        status_exists = os.path.exists(ocr_status_path)
+        result_exists = os.path.exists(ocr_result_path)
+        
+        # ステータスの読み取り
+        status = None
+        if status_exists:
+            with open(ocr_status_path, "r") as f:
+                status = f.read().strip()
+        
+        # 結果の有無
+        result = None
+        if result_exists:
+            result = "Result file exists"
+        
+        # jobs_statusからの情報
+        jobs_info = jobs_status.get(job_id, {})
+        
+        return {
+            "job_id": job_id,
+            "job_file_exists": job_exists,
+            "status_file_exists": status_exists,
+            "result_file_exists": result_exists,
+            "status": status,
+            "has_result": result is not None,
+            "job_status_data": jobs_info,
+            "temp_folder": UPLOAD_FOLDER,
+            "ocr_temp_folder": OCR_TEMP_FOLDER
+        }
+    except Exception as e:
+        return {"error": str(e)}
+        
 if __name__ == "__main__":
     # 直接実行された場合は開発サーバーを起動
     import uvicorn
