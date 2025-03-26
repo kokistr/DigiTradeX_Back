@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: '3.10'              # Python のバージョンを設定
+  PYTHON_VERSION: '3.10'                # Python のバージョンを設定
   APP_NAME: tech0-gen-8-step4-dtx-poback  # App Service の名前
 
 jobs:
