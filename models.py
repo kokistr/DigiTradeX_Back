@@ -8,9 +8,9 @@ class User(Base):
     __tablename__ = "users"
 
     user_id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
+    user_name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)  # サイズを255に拡大（bcryptハッシュが長いため）
+    password_hash = Column(String(255), nullable=False)
     role = Column(String(50), default="user")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
@@ -21,16 +21,19 @@ class User(Base):
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
 
-    id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id"))
-    customer_name = Column(String(100), nullable=False)
-    po_number = Column(String(100), nullable=False, index=True)
-    currency = Column(String(10))
-    total_amount = Column(String(50))
-    payment_terms = Column(String(100))
-    shipping_terms = Column(String(100))
-    destination = Column(String(100))
+    user_name = Column(String(100))
+    po_no = Column(String(100), nullable=False, index=True)
+    currency_code = Column(String(10))
+    total_price = Column(String(50))
+    payment_condition = Column(String(100))
+    shipping_term = Column(String(100))
+    discharge_port = Column(String(100))
     status = Column(String(50), default="手配中")
+    cut_off_date = Column(String(50))
+    etd = Column(String(50))
+    eta = Column(String(50))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
@@ -43,8 +46,8 @@ class PurchaseOrder(Base):
 class OrderItem(Base):
     __tablename__ = "order_items"
 
-    id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.id"))
+    item_id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
     product_name = Column(String(200), nullable=False)
     quantity = Column(String(50))
     unit_price = Column(String(50))
@@ -57,8 +60,8 @@ class OrderItem(Base):
 class ShippingSchedule(Base):
     __tablename__ = "shipping_schedules"
 
-    id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.id"))
+    shipping_id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
     shipping_company = Column(String(100))
     transit_point = Column(String(100))
     cut_off_date = Column(String(50))
@@ -76,9 +79,9 @@ class ShippingSchedule(Base):
 class OCRResult(Base):
     __tablename__ = "ocr_results"
 
-    id = Column(Integer, primary_key=True, index=True)
+    ocr_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id"))
-    po_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=True)
+    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"), nullable=True)
     file_path = Column(String(255), nullable=False)
     raw_text = Column(Text)
     processed_data = Column(Text)
@@ -92,8 +95,8 @@ class OCRResult(Base):
 class Input(Base):
     __tablename__ = "inputs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    po_id = Column(Integer, ForeignKey("purchase_orders.id"))
+    input_id = Column(Integer, primary_key=True, index=True)
+    po_id = Column(Integer, ForeignKey("purchase_orders.po_id"))
     shipment_arrangement = Column(String(50))
     po_acquisition_date = Column(String(50))
     organization = Column(String(100))
